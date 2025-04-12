@@ -1,28 +1,25 @@
 # browser_controller.py
-from playwright.sync_api import sync_playwright, Page, Browser, Playwright, TimeoutError as PlaywrightTimeoutError, Error as PlaywrightError, Locator
+from playwright.sync_api import sync_playwright, Page, Browser, Playwright, TimeoutError as PlaywrightTimeoutError, Error as PlaywrightError, Locator, ConsoleMessage
 import logging
 import time
 import random
-import json  
-import os  
+import json
+import os
 from typing import Optional, Any, Dict, List
 
 logger = logging.getLogger(__name__)
 
 COMMON_HEADERS = {
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-    'Accept-Encoding': 'gzip, deflate, br', # Note: Playwright handles decoding
-    'Accept-Language': 'en-US,en;q=0.9', # Common language
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Accept-Language': 'en-US,en;q=0.9',
     'Sec-Fetch-Dest': 'document',
     'Sec-Fetch-Mode': 'navigate',
-    'Sec-Fetch-Site': 'none', # Varies, 'none' for initial nav
+    'Sec-Fetch-Site': 'none',
     'Sec-Fetch-User': '?1',
     'Upgrade-Insecure-Requests': '1',
-    # User-Agent is set separately in new_context
-    # Avoid setting Sec-CH-UA headers manually unless perfectly matching user agent
 }
 
-# JavaScript to attempt hiding webdriver flag
 HIDE_WEBDRIVER_SCRIPT = """
 Object.defineProperty(navigator, 'webdriver', {
   get: () => undefined
@@ -31,49 +28,79 @@ Object.defineProperty(navigator, 'webdriver', {
 
 
 class BrowserController:
-    """Handles Playwright browser automation tasks."""
+    """Handles Playwright browser automation tasks, including console message capture."""
 
     def __init__(self, headless=True):
         self.playwright: Playwright | None = None
         self.browser: Browser | None = None
+        self.context: Optional[Any] = None # Keep context reference
         self.page: Page | None = None
         self.headless = headless
-        self.default_navigation_timeout = 90000 # 90 seconds for page loads
-        self.default_action_timeout = 20000 # 20 seconds for actions like click/type/find
+        self.default_navigation_timeout = 90000
+        self.default_action_timeout = 20000
+        self.console_messages: List[Dict[str, Any]] = [] # <-- Add list to store messages
         logger.info(f"BrowserController initialized (headless={headless}).")
 
+    def _handle_console_message(self, message: ConsoleMessage):
+        """Callback function to handle console messages."""
+        msg_type = message.type
+        msg_text = message.text
+        timestamp = time.time()
+        log_entry = {
+            "timestamp": timestamp,
+            "type": msg_type,
+            "text": msg_text,
+            # Optional: Add location if needed, but can be verbose
+            # "location": message.location()
+        }
+        self.console_messages.append(log_entry)
+        # Optional: Log immediately to agent's log file for real-time debugging
+        log_level = logging.WARNING if msg_type in ['error', 'warning'] else logging.DEBUG
+        logger.log(log_level, f"[CONSOLE.{msg_type.upper()}] {msg_text}")
+
+
     def start(self):
-        """Starts Playwright, launches browser with anti-detection settings."""
+        """Starts Playwright, launches browser, creates context/page, and attaches console listener."""
         try:
             logger.info("Starting Playwright...")
             self.playwright = sync_playwright().start()
             self.browser = self.playwright.chromium.launch(headless=self.headless)
 
-            # Create context with anti-detection measures
             self.context = self.browser.new_context(
-                 user_agent=self._get_random_user_agent(), # Rotate User-Agent
-                 viewport=self._get_random_viewport(), # Slightly randomize viewport
-                 # locale='en-US', # Can also set locale
-                 # timezone_id='America/New_York', # Can set timezone
-                 ignore_https_errors=True, # Often needed for automation
-                 java_script_enabled=True, # Ensure JS is enabled
+                 user_agent=self._get_random_user_agent(),
+                 viewport=self._get_random_viewport(),
+                 ignore_https_errors=True,
+                 java_script_enabled=True,
                  extra_http_headers=COMMON_HEADERS,
             )
             self.context.set_default_navigation_timeout(self.default_navigation_timeout)
             self.context.set_default_timeout(self.default_action_timeout)
-
-            # Add script to hide navigator.webdriver before page loads
             self.context.add_init_script(HIDE_WEBDRIVER_SCRIPT)
 
             self.page = self.context.new_page()
-            logger.info("Browser context created with anti-detection measures.")
-            logger.info(f"Using User-Agent: {self.context.pages[0].evaluate('navigator.userAgent')}") # Log the actual UA used
+
+            # --- Attach Console Listener ---
+            self.page.on('console', self._handle_console_message)
+            logger.info("Attached console message listener to the page.")
+            # -----------------------------
+
+            logger.info("Browser context and page created.")
+            logger.info(f"Using User-Agent: {self.page.evaluate('navigator.userAgent')}")
 
         except Exception as e:
             logger.error(f"Failed to start Playwright or launch browser: {e}", exc_info=True)
-            if self.browser: self.browser.close() # Attempt cleanup
-            if self.playwright: self.playwright.stop()
+            self.close() # Ensure cleanup on failure
             raise
+    
+    def get_console_messages(self) -> List[Dict[str, Any]]:
+        """Returns a copy of the captured console messages."""
+        return list(self.console_messages) # Return a copy
+
+    def clear_console_messages(self):
+        """Clears the stored console messages."""
+        logger.debug("Clearing captured console messages.")
+        self.console_messages = []
+
 
     def _get_random_user_agent(self):
         """Provides a random choice from a list of common user agents."""
@@ -124,6 +151,7 @@ class BrowserController:
             self.context = None
             self.browser = None
             self.playwright = None
+            self.console_messages = [] # Clear messages on final close
 
     def goto(self, url: str):
         """Navigates the page to a specific URL."""
@@ -176,160 +204,134 @@ class BrowserController:
 
 
     def take_screenshot(self) -> bytes | None:
-        """Takes a screenshot of the current page."""
+        """Takes a screenshot of the current page and returns bytes."""
         if not self.page:
             logger.error("Cannot take screenshot, browser not started.")
             return None
         try:
             screenshot_bytes = self.page.screenshot()
-            logger.info("Screenshot taken.")
+            logger.info("Screenshot taken (bytes).")
             return screenshot_bytes
         except Exception as e:
             logger.error(f"Error taking screenshot: {e}", exc_info=True)
             return None
-
-    def _find_element(self, selector: str, timeout=None) -> Optional[Locator]:
-        """
-        Simplified helper to find an element, relying more on Playwright's
-        built-in checks within actions like click() and fill().
-        Waits primarily for the element to be attached and potentially visible.
-        """
+        
+    def save_screenshot(self, file_path: str) -> bool:
+        """Takes a screenshot and saves it to the specified file path."""
         if not self.page:
-             raise PlaywrightError("Browser not started.")
-        effective_timeout = timeout if timeout is not None else self.default_action_timeout
-        logger.debug(f"Attempting to find element: '{selector}' (timeout: {effective_timeout}ms)")
+            logger.error(f"Cannot save screenshot to {file_path}, browser not started.")
+            return False
         try:
-             element = self.page.locator(selector).first
-             # Wait for element to be attached to the DOM. Visibility/enabled checks
-             # will be handled by the action itself (click, fill).
-             logger.debug(f"Waiting for element '{selector}' to be attached...")
-             # Use a shorter timeout here, actionability checks handle the rest
-             element.wait_for(state='attached', timeout=effective_timeout * 0.5)
+            # Ensure directory exists
+            abs_file_path = os.path.abspath(file_path)
+            os.makedirs(os.path.dirname(abs_file_path), exist_ok=True)
 
-             # Optional: Scroll into view might still be helpful sometimes
-             try:
-                  logger.debug(f"Scrolling element '{selector}' into view if needed...")
-                  element.scroll_into_view_if_needed(timeout=effective_timeout * 0.25)
-                  time.sleep(0.1) # Small delay after potential scroll
-             except Exception as scroll_e:
-                  logger.warning(f"Could not scroll element {selector} into view, proceeding anyway. Error: {scroll_e}")
-
-
-             logger.info(f"Element found and attached: '{selector}'")
-             return element
-        except PlaywrightTimeoutError as e:
-             # Error during 'attached' wait or scroll
-             logger.warning(f"Timeout ({effective_timeout}ms) waiting for element state 'attached' or scrolling: '{selector}'. Error: {e}")
-             return None
-        except PlaywrightError as e:
-            logger.error(f"PlaywrightError finding element '{selector}': {e}")
-            return None
+            self.page.screenshot(path=abs_file_path)
+            logger.info(f"Screenshot saved to: {abs_file_path}")
+            return True
         except Exception as e:
-             logger.error(f"Unexpected error finding element '{selector}': {e}", exc_info=True)
-             return None
+            logger.error(f"Error saving screenshot to {file_path}: {e}", exc_info=True)
+            return False
 
     def click(self, selector: str):
-        """Clicks an element, relying on Playwright's actionability checks."""
+        """Clicks an element, relying on Playwright's built-in actionability checks."""
         if not self.page:
             raise PlaywrightError("Browser not started.")
-        element = None
         try:
             logger.info(f"Attempting to click element: {selector}")
-            # Find the element first (waits for attached state)
-            element = self._find_element(selector)
-            if element:
-                 # Playwright's click() automatically waits for:
-                 # - Element to be Visible
-                 # - Element to be Stable (no animations)
-                 # - Element to be Enabled
-                 # - Element to receive events
-                 logger.debug(f"Executing click on {selector} (with built-in actionability checks)...")
-                 click_delay = random.uniform(50, 150) # Human-like pause during click
+            locator = self.page.locator(selector).first #
+            logger.debug(f"Executing click on locator for '{selector}' (with built-in checks)...")
+            click_delay = random.uniform(50, 150)
 
-                 # Optional: Try hover first, but don't fail if it errors
-                 try:
-                     element.hover(timeout=3000)
-                     self._human_like_delay(0.1, 0.3)
-                 except Exception:
-                     logger.debug(f"Hover failed for {selector}, continuing with click.")
+            # Optional: Try hover first
+            try:
+                locator.hover(timeout=3000) # Short timeout for hover
+                self._human_like_delay(0.1, 0.3)
+            except Exception:
+                logger.debug(f"Hover failed or timed out for {selector}, proceeding with click.")
 
-                 element.click(delay=click_delay, timeout=self.default_action_timeout * 0.75) # Generous timeout for the click action itself
-                 logger.info(f"Clicked element: {selector}")
-                 self._human_like_delay(1.0, 2.0) # Post-click delay
-            else:
-                # _find_element failed (timeout finding/attaching)
-                raise PlaywrightError(f"Element not found or not attached within timeout: {selector}")
+            # Perform the click with its own timeout
+            locator.click(delay=click_delay, timeout=self.default_action_timeout)
+            logger.info(f"Clicked element: {selector}")
+            self._human_like_delay(0.5, 1.5) # Post-click delay
 
         except PlaywrightTimeoutError as e:
             # Timeout occurred *during* the click action's internal waits
-            logger.error(f"Timeout during click action's internal waits for selector: {selector}. Element might be obscured, disabled, or unstable.")
-            raise PlaywrightTimeoutError(f"Timeout trying to click element: {selector}. Check visibility and interactability.") from e
+            logger.error(f"Timeout ({self.default_action_timeout}ms) waiting for element '{selector}' to be actionable for click. Element might be obscured, disabled, unstable, or not found.")
+            # Add more context to the error message
+            screenshot_path = f"output/click_timeout_{selector.replace(' ','_').replace(':','_').replace('>','_')[:30]}_{int(time.time())}.png"
+            self.save_screenshot(screenshot_path)
+            logger.error(f"Saved screenshot on click timeout to: {screenshot_path}")
+            raise PlaywrightTimeoutError(f"Timeout trying to click element: '{selector}'. Check visibility, interactability, and selector correctness. Screenshot saved to {screenshot_path}") from e
         except PlaywrightError as e:
-             # Other errors during click (e.g., detached during click)
-             logger.error(f"PlaywrightError clicking element {selector}: {e}")
-             raise PlaywrightError(f"Failed to click element {selector}: {e}") from e
+             # Other errors during click
+             logger.error(f"PlaywrightError clicking element '{selector}': {e}")
+             raise PlaywrightError(f"Failed to click element '{selector}': {e}") from e
         except Exception as e:
-             logger.error(f"Unexpected error clicking {selector}: {e}", exc_info=True)
-             raise PlaywrightError(f"Unexpected error clicking element {selector}: {e}") from e
+             logger.error(f"Unexpected error clicking '{selector}': {e}", exc_info=True)
+             raise PlaywrightError(f"Unexpected error clicking element '{selector}': {e}") from e
 
     def type(self, selector: str, text: str):
         """
-        Types text into an element, prioritizing the more robust `fill` method.
-        Includes fallback to `type` if `fill` fails unexpectedly.
+        Inputs text into an element, prioritizing the robust `fill` method.
+        Includes fallback to `type`.
         """
         if not self.page:
             raise PlaywrightError("Browser not started.")
-        element = None
         try:
-            logger.info(f"Attempting to input text '{text[:20]}...' into element: {selector}")
-            element = self._find_element(selector) # Waits for attached
+            logger.info(f"Attempting to input text '{text[:30]}...' into element: {selector}")
+            locator = self.page.locator(selector).first
 
-            if element:
-                # --- Strategy 1: Use fill() ---
-                # fill() clears the field first and types text.
-                # It also performs actionability checks (visible, enabled, etc.)
-                logger.debug(f"Trying to 'fill' element {selector} (includes actionability checks)...")
-                try:
-                    element.fill(text, timeout=self.default_action_timeout * 0.8) # Timeout for fill action
-                    logger.info(f"'fill' successful for element: {selector}")
-                    self._human_like_delay(0.5, 1.0) # Delay after successful input
-                    return # Success! Exit the method.
-                except (PlaywrightTimeoutError, PlaywrightError) as fill_error:
-                    logger.warning(f"'fill' action failed for {selector}: {fill_error}. Attempting fallback to 'type'.")
-                    # Proceed to fallback if fill fails
+            # --- Strategy 1: Use fill() ---
+            # fill() clears the field first and inputs text.
+            # It performs actionability checks (visible, enabled, editable etc.)
+            
+            logger.debug(f"Trying to 'fill' locator for '{selector}' (includes actionability checks)...")
+            try:
+                locator.fill(text, timeout=self.default_action_timeout) # Use default action timeout
+                logger.info(f"'fill' successful for element: {selector}")
+                self._human_like_delay(0.3, 0.8) # Delay after successful input
+                return # Success! Exit the method.
+            except (PlaywrightTimeoutError, PlaywrightError) as fill_error:
+                logger.warning(f"'fill' action failed for '{selector}': {fill_error}. Attempting fallback to 'type'.")
+            
+            # Proceed to fallback
 
-                # --- Strategy 2: Fallback to type() ---
-                # Only try type if fill failed.
-                # type() simulates key presses, might work if fill had issues.
-                logger.debug(f"Trying fallback 'type' for element {selector}...")
-                try:
-                    # We can add clear() before type if needed, but let type handle it first.
-                    # element.clear(timeout=5000)
-                    # self._human_like_delay(0.1, 0.3)
-                    typing_delay_ms = random.uniform(80, 180)
-                    element.type(text, delay=typing_delay_ms, timeout=self.default_action_timeout * 0.8)
-                    logger.info(f"Fallback 'type' successful for element: {selector}")
-                    self._human_like_delay(0.5, 1.0) # Delay after successful input
-                    return # Success!
-                except (PlaywrightTimeoutError, PlaywrightError) as type_error:
-                     logger.error(f"Both 'fill' and fallback 'type' failed for {selector}. Last error ('type'): {type_error}")
-                     # Raise the error from the 'type' attempt as it was the last one
-                     raise type_error from fill_error # Chain the exceptions for context
+            # --- Strategy 2: Fallback to type() ---
+            logger.debug(f"Trying fallback 'type' for locator '{selector}'...")
+            try:
+                # Ensure element is clear before typing as a fallback precaution
+                locator.clear(timeout=self.default_action_timeout * 0.5) # Quick clear attempt
+                self._human_like_delay(0.1, 0.3)
+                typing_delay_ms = random.uniform(70, 150)
+                locator.type(text, delay=typing_delay_ms, timeout=self.default_action_timeout)
+                logger.info(f"Fallback 'type' successful for element: {selector}")
+                self._human_like_delay(0.3, 0.8)
+                return # Success!
+            except (PlaywrightTimeoutError, PlaywrightError) as type_error:
+                 logger.error(f"Both 'fill' and fallback 'type' failed for '{selector}'. Last error ('type'): {type_error}")
+                 # Raise the error from the 'type' attempt as it was the last one tried
+                 screenshot_path = f"output/type_fail_{selector.replace(' ','_').replace(':','_').replace('>','_')[:30]}_{int(time.time())}.png"
+                 self.save_screenshot(screenshot_path)
+                 logger.error(f"Saved screenshot on type failure to: {screenshot_path}")
+                 # Raise a combined error or the last one
+                 raise PlaywrightError(f"Failed to input text into element '{selector}' using both fill and type. Last error: {type_error}. Screenshot: {screenshot_path}") from type_error
 
-            else:
-                 # _find_element failed (timeout finding/attaching)
-                 raise PlaywrightError(f"Element not found or not attached within timeout, cannot type: {selector}")
-
-        # Catch errors raised from fill/type or _find_element
+        # Catch errors related to finding/interacting
         except PlaywrightTimeoutError as e:
-             logger.error(f"Timeout during input operation stages for selector: {selector}. Element might be obscured, disabled, or unstable.")
-             raise PlaywrightTimeoutError(f"Timeout trying to input text into element: {selector}. Check interactability.") from e
+             # This might catch timeouts from clear() or the actionability checks within fill/type
+             logger.error(f"Timeout ({self.default_action_timeout}ms) during input operation stages for selector: '{selector}'. Element might not become actionable.")
+             screenshot_path = f"output/input_timeout_{selector.replace(' ','_').replace(':','_').replace('>','_')[:30]}_{int(time.time())}.png"
+             self.save_screenshot(screenshot_path)
+             logger.error(f"Saved screenshot on input timeout to: {screenshot_path}")
+             raise PlaywrightTimeoutError(f"Timeout trying to input text into element: '{selector}'. Check interactability. Screenshot: {screenshot_path}") from e
         except PlaywrightError as e:
-             logger.error(f"PlaywrightError inputting text into element {selector}: {e}")
-             raise PlaywrightError(f"Failed to input text into element {selector}: {e}") from e
+             # Covers other Playwright issues like element detached during operation
+             logger.error(f"PlaywrightError inputting text into element '{selector}': {e}")
+             raise PlaywrightError(f"Failed to input text into element '{selector}': {e}") from e
         except Exception as e:
-             logger.error(f"Unexpected error inputting text into {selector}: {e}", exc_info=True)
-             raise PlaywrightError(f"Unexpected error inputting text into element {selector}: {e}") from e
+             logger.error(f"Unexpected error inputting text into '{selector}': {e}", exc_info=True)
+             raise PlaywrightError(f"Unexpected error inputting text into element '{selector}': {e}") from e
              
     def scroll(self, direction: str):
         """Scrolls the page up or down with a slight delay."""
@@ -353,68 +355,88 @@ class BrowserController:
     def extract_text(self, selector: str) -> str:
         """Extracts the text content from the first element matching the selector."""
         if not self.page:
-            raise PlaywrightError("Browser not started.")
+            raise PlaywrightError("Browser not started, cannot extract text.")
         try:
             logger.info(f"Extracting text from selector: {selector}")
-            element = self._find_element(selector) # Use helper to find first
-            if not element:
-                 error_msg = f"Element with selector '{selector}' could not be found for text extraction."
-                 logger.error(error_msg)
-                 return f"Error: {error_msg}" # Return specific error
+            locator = self.page.locator(selector).first # Get locator
 
-            text = element.text_content()
-            if text is None: text = "" # Handle case where text_content is None
+            # Use text_content() which has implicit waits, but add explicit short wait for visibility first
+            try:
+                 # Wait for element to be at least visible, maybe attached is enough?
+                 # Let's stick to visible for text extraction. Use a shorter timeout.
+                 locator.wait_for(state='visible', timeout=self.default_action_timeout * 0.75)
+            except PlaywrightTimeoutError:
+                 # Element didn't become visible in time
+                 # Check if it exists but is hidden
+                 is_attached = False
+                 try:
+                      is_attached = locator.is_attached() # Check if it's in DOM but hidden
+                 except: pass # Ignore errors here
+
+                 if is_attached:
+                      logger.warning(f"Element '{selector}' found in DOM but is not visible within timeout for text extraction.")
+                      return "Error: Element found but not visible"
+                 else:
+                      error_msg = f"Timeout waiting for element '{selector}' to be visible for text extraction."
+                      logger.error(error_msg)
+                      return f"Error: {error_msg}"
+
+            # If visible, proceed to get text
+            text = locator.text_content() # Get text content
+            if text is None: text = ""
             logger.info(f"Successfully extracted text from '{selector}': '{text[:100]}...'")
-            return text.strip() # Return stripped text
+            return text.strip()
+
+        except PlaywrightError as e: # Catch other Playwright errors during text_content or wait_for
+            logger.error(f"PlaywrightError extracting text from '{selector}': {e}")
+            return f"Error extracting text: {type(e).__name__}: {e}"
         except Exception as e:
-            logger.error(f"Error extracting text from '{selector}': {e}", exc_info=True)
-            return f"Error extracting text: {e}" # Return specific error
+            logger.error(f"Unexpected error extracting text from '{selector}': {e}", exc_info=True)
+            return f"Error extracting text: {type(e).__name__}: {e}"
+
 
     def extract_attributes(self, selector: str, attributes: List[str]) -> Dict[str, Optional[str]]:
-        """
-        Extracts specified attributes from the first element matching the selector.
-
-        Args:
-            selector: The Playwright selector for the element.
-            attributes: A list of attribute names to extract (e.g., ['href', 'src', 'value']).
-
-        Returns:
-            A dictionary where keys are attribute names and values are the extracted
-            attribute values (or None if an attribute doesn't exist).
-            Returns an empty dict if the element is not found.
-        """
+        """Extracts specified attributes from the first element matching the selector."""
         if not self.page:
             raise PlaywrightError("Browser not started.")
         if not attributes:
              logger.warning("extract_attributes called with empty attributes list.")
-             return {}
+             return {"error": "No attributes specified for extraction."} # Return error
 
         result_dict = {}
         try:
             logger.info(f"Extracting attributes {attributes} from selector: {selector}")
-            element = self._find_element(selector) # Use helper to find first
+            locator = self.page.locator(selector).first # Get locator
 
-            if not element:
-                 logger.error(f"Element with selector '{selector}' not found for attribute extraction.")
-                 # Return specific error indicator? Or just empty dict? Let's return dict with error marker
-                 return {"error": f"Element not found: {selector}"}
+            # Wait briefly for the element to be attached (don't need visibility necessarily for attributes)
+            try:
+                locator.wait_for(state='attached', timeout=self.default_action_timeout * 0.5)
+            except PlaywrightTimeoutError:
+                 error_msg = f"Timeout waiting for element '{selector}' to be attached for attribute extraction."
+                 logger.error(error_msg)
+                 return {"error": error_msg}
 
+            # Element is attached, proceed
             for attr_name in attributes:
                 try:
-                     attr_value = element.get_attribute(attr_name)
-                     result_dict[attr_name] = attr_value # Store value (can be None if attr doesn't exist)
+                     # get_attribute doesn't wait, element must exist
+                     attr_value = locator.get_attribute(attr_name)
+                     result_dict[attr_name] = attr_value
                      logger.debug(f"Extracted attribute '{attr_name}': '{str(attr_value)[:100]}...' from '{selector}'")
                 except Exception as attr_e:
                      logger.warning(f"Could not extract attribute '{attr_name}' from '{selector}': {attr_e}")
-                     result_dict[attr_name] = f"Error extracting: {attr_e}" # Indicate specific attribute error
+                     result_dict[attr_name] = f"Error extracting: {attr_e}"
 
-            logger.info(f"Successfully extracted attributes {list(result_dict.keys())} from '{selector}'.")
+            logger.info(f"Finished extracting attributes {list(result_dict.keys())} from '{selector}'.")
             return result_dict
 
+        except PlaywrightError as e: # Catch errors from wait_for or get_attribute
+            logger.error(f"PlaywrightError extracting attributes {attributes} from '{selector}': {e}")
+            return {"error": f"PlaywrightError extracting attributes from {selector}: {e}"}
         except Exception as e:
-            logger.error(f"Error extracting attributes {attributes} from '{selector}': {e}", exc_info=True)
-            # Return dict indicating a general failure for this extraction attempt
+            logger.error(f"Unexpected error extracting attributes {attributes} from '{selector}': {e}", exc_info=True)
             return {"error": f"General error extracting attributes from {selector}: {e}"}
+
 
     def save_json_data(self, data: Any, file_path: str) -> dict:
         """
