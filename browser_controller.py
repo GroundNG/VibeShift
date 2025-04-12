@@ -7,6 +7,9 @@ import json
 import os
 from typing import Optional, Any, Dict, List
 
+from dom.service import DomService
+from dom.views import DOMState, DOMElementNode, SelectorMap
+
 logger = logging.getLogger(__name__)
 
 COMMON_HEADERS = {
@@ -38,6 +41,7 @@ class BrowserController:
         self.headless = headless
         self.default_navigation_timeout = 90000
         self.default_action_timeout = 20000
+        self._dom_service: Optional[DomService] = None
         self.console_messages: List[Dict[str, Any]] = [] # <-- Add list to store messages
         logger.info(f"BrowserController initialized (headless={headless}).")
 
@@ -64,6 +68,9 @@ class BrowserController:
         try:
             logger.info("Starting Playwright...")
             self.playwright = sync_playwright().start()
+            # Consider adding args for anti-detection if needed:
+            # browser_args = ['--disable-blink-features=AutomationControlled']
+            # self.browser = self.playwright.chromium.launch(headless=self.headless, args=browser_args)
             self.browser = self.playwright.chromium.launch(headless=self.headless)
 
             self.context = self.browser.new_context(
@@ -79,6 +86,9 @@ class BrowserController:
 
             self.page = self.context.new_page()
 
+            # Initialize DomService with the created page
+            self._dom_service = DomService(self.page) # Instantiate here
+            
             # --- Attach Console Listener ---
             self.page.on('console', self._handle_console_message)
             logger.info("Attached console message listener to the page.")
@@ -135,6 +145,7 @@ class BrowserController:
     def close(self):
         """Closes the browser and stops Playwright."""
         try:
+            self._dom_service = None
             if self.context:
                  self.context.close()
                  logger.info("Browser context closed.")
@@ -153,6 +164,50 @@ class BrowserController:
             self.playwright = None
             self.console_messages = [] # Clear messages on final close
 
+    def get_structured_dom(self, highlight_elements: bool = True, viewport_expansion: int = 0) -> Optional[DOMState]:
+        """
+        Uses DomService to get a structured representation of the interactive DOM elements.
+
+        Args:
+            highlight_elements: Whether to visually highlight elements in the browser.
+            viewport_expansion: Pixel value to expand the viewport for element detection (0=viewport only, -1=all).
+
+        Returns:
+            A DOMState object containing the element tree and selector map, or None on error.
+        """
+        if not self.page or not self._dom_service:
+            logger.error("Browser/Page not initialized or DomService unavailable.")
+            return None
+        try:
+            logger.info(f"Requesting structured DOM (highlight={highlight_elements}, expansion={viewport_expansion})...")
+            start_time = time.time()
+            dom_state = self._dom_service.get_clickable_elements(
+                highlight_elements=highlight_elements,
+                focus_element=-1, # Not focusing on a specific element for now
+                viewport_expansion=viewport_expansion
+            )
+            end_time = time.time()
+            logger.info(f"Structured DOM retrieved in {end_time - start_time:.2f}s. Found {len(dom_state.selector_map)} interactive elements.")
+            # Optional: Generate CSS selectors immediately after getting the state
+            # for node in dom_state.selector_map.values():
+            #      if not node.css_selector:
+            #           node.css_selector = DomService._enhanced_css_selector_for_element(node)
+
+            return dom_state
+        except Exception as e:
+            logger.error(f"Error getting structured DOM: {type(e).__name__}: {e}", exc_info=True)
+            return None
+    
+    def get_selector_for_node(self, node: DOMElementNode) -> Optional[str]:
+        """Generates a robust CSS selector for a given DOMElementNode."""
+        if not node: return None
+        try:
+            # Use the static method from DomService
+            return DomService._enhanced_css_selector_for_element(node)
+        except Exception as e:
+             logger.error(f"Error generating selector for node {node.xpath}: {e}", exc_info=True)
+             return node.xpath # Fallback to xpath
+    
     def goto(self, url: str):
         """Navigates the page to a specific URL."""
         if not self.page:
@@ -160,7 +215,7 @@ class BrowserController:
         try:
             logger.info(f"Navigating to URL: {url}")
             # Use default navigation timeout set in context
-            response = self.page.goto(url, wait_until='domcontentloaded') # 'load' or 'networkidle' might be better sometimes
+            response = self.page.goto(url, wait_until='domcontentloaded', timeout=self.default_navigation_timeout) # 'load' or 'networkidle' might be better sometimes
             # Add a small stable delay after load
             time.sleep(2)
             status = response.status if response else 'unknown'
@@ -182,6 +237,7 @@ class BrowserController:
     def get_html(self) -> str:
         """Returns the full HTML content of the current page."""
         if not self.page:
+            logger.error("Cannot get HTML, browser not started.")
             raise Exception("Browser not started.")
         try:
             html = self.page.content()
@@ -233,6 +289,36 @@ class BrowserController:
             logger.error(f"Error saving screenshot to {file_path}: {e}", exc_info=True)
             return False
 
+    def _find_element(self, selector: str, timeout=None) -> Optional[Locator]:
+        """Finds the first element matching the selector."""
+        if not self.page:
+             raise PlaywrightError("Browser not started.")
+        effective_timeout = timeout if timeout is not None else self.default_action_timeout
+        logger.debug(f"Attempting to find element: '{selector}' (timeout: {effective_timeout}ms)")
+        try:
+             # Use locator().first to explicitly target the first match
+             element = self.page.locator(selector).first
+             # Brief wait for attached state, primary checks in actions
+             element.wait_for(state='attached', timeout=effective_timeout * 0.5)
+             # Scroll into view if needed
+             try:
+                  element.scroll_into_view_if_needed(timeout=effective_timeout * 0.25)
+                  time.sleep(0.1)
+             except Exception as scroll_e:
+                  logger.warning(f"Non-critical: Could not scroll element {selector} into view. Error: {scroll_e}")
+             logger.debug(f"Element found and attached: '{selector}'")
+             return element
+        except PlaywrightTimeoutError:
+             # Don't log as error here, actions will report failure if needed
+             logger.debug(f"Timeout ({effective_timeout}ms) waiting for element state 'attached' or scrolling: '{selector}'.")
+             return None
+        except PlaywrightError as e:
+            logger.error(f"PlaywrightError finding element '{selector}': {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error finding element '{selector}': {e}", exc_info=True)
+            return None
+    
     def click(self, selector: str):
         """Clicks an element, relying on Playwright's built-in actionability checks."""
         if not self.page:

@@ -3,3 +3,4 @@ google-generativeai
 beautifulsoup4
 python-dotenv
 Pillow
+pydantic>=2.0  
