@@ -144,70 +144,121 @@ class DOMElementNode(DOMBaseNode):
 
 
     @time_execution_sync('--clickable_elements_to_string')
-    def clickable_elements_to_string(self, include_attributes: Optional[List[str]] = None) -> str:
+    def generate_llm_context_string(self, include_attributes: Optional[List[str]] = None, max_static_elements: int = 50) -> str:
         """
-        Generates a string representation of the interactive elements tree,
-        suitable for LLM context. Uses highlight indices.
+        Generates a string representation of VISIBLE elements tree for LLM context.
+        Clearly distinguishes interactive elements (with index) from static ones.
+
+        Args:
+            include_attributes: List of specific attributes to include. If None, uses defaults.
+            max_static_elements: Maximum number of static elements to include to control context length.
         """
         formatted_lines = []
+        processed_node_ids = set()
+        static_element_count = 0
+        nodes_processed_count = 0 
+
+        def get_direct_visible_text(node: DOMElementNode, max_len=10000) -> str:
+            """Gets text directly within this node, ignoring children elements."""
+            texts = []
+            for child in node.children:
+                if isinstance(child, DOMTextNode) and child.is_visible:
+                    texts.append(child.text.strip())
+            full_text = ' '.join(filter(None, texts))
+            if len(full_text) > max_len:
+                 return full_text[:max_len-3] + "..."
+            return full_text
 
         def process_node(node: Union['DOMElementNode', DOMTextNode], depth: int) -> None:
-            indent = '  ' * depth
-            if isinstance(node, DOMElementNode):
-                # Process and print the element if it has a highlight_index (meaning it's interactive)
-                if node.highlight_index is not None:
-                    # Extract relevant attributes to display
-                    attributes_to_show = {}
-                    if include_attributes: # If specific attributes requested
-                        for attr_key in include_attributes:
-                            if attr_key in node.attributes:
-                                attributes_to_show[attr_key] = node.attributes[attr_key]
-                    else: # Default attributes to show (can be adjusted)
-                         default_attrs = ['id', 'name', 'class', 'aria-label', 'placeholder', 'role', 'type', 'value', 'title']
-                         for attr_key in default_attrs:
-                              if attr_key in node.attributes and node.attributes[attr_key]: # Only show if value exists
-                                   attributes_to_show[attr_key] = node.attributes[attr_key]
+            nonlocal static_element_count, nodes_processed_count # Allow modification
 
+            # Skip if already processed or not an element
+            if not isinstance(node, DOMElementNode):
+                return
 
-                    attrs_str = ""
-                    if attributes_to_show:
-                         parts = []
-                         for key, value in attributes_to_show.items():
-                              # Abbreviate long values in the output string
-                              display_value = value if len(value) < 50 else value[:47] + '...'
-                              # Escape quotes in value if necessary
-                              display_value = display_value.replace('"', '&quot;')
-                              parts.append(f'{key}="{display_value}"')
-                         attrs_str = " ".join(parts)
+            nodes_processed_count += 1
+            node_id = id(node)
+            if node_id in processed_node_ids:
+                return
+            processed_node_ids.add(node_id)
 
-                    # Get text content associated with this interactive element
+            # --- Decide whether to ADD the CURRENT node to output ---
+            should_add_current_node = False
+            line_to_add = ""
+            is_interactive = node.highlight_index is not None
+
+            # Only consider adding the node if it's visible
+            if node.is_visible:
+                indent = '  ' * depth
+
+                # --- Attribute Extraction (Common logic) ---
+                attributes_to_show = {}
+                default_attrs = ['id', 'name', 'class', 'aria-label', 'placeholder', 'role', 'type', 'value', 'title', 'alt', 'href', 'data-testid']
+                attrs_to_check = include_attributes if include_attributes else default_attrs
+                for attr_key in attrs_to_check:
+                    if attr_key in node.attributes and node.attributes[attr_key]:
+                        attributes_to_show[attr_key] = node.attributes[attr_key]
+                attrs_str = ""
+                if attributes_to_show:
+                    parts = []
+                    for key, value in attributes_to_show.items():
+                        display_value = value if len(value) < 50 else value[:47] + '...'
+                        display_value = display_value.replace('"', '"')
+                        parts.append(f'{key}="{display_value}"')
+                    attrs_str = " ".join(parts)
+
+                # --- Format line based on Interactive vs. Static ---
+                if is_interactive:
+                    # == INTERACTIVE ELEMENT ==
                     text_content = node.get_all_text_till_next_clickable_element()
-                    # Clean text content (remove extra newlines/spaces)
                     text_content = ' '.join(text_content.split()) if text_content else ""
+                    line_to_add = f"{indent}[{node.highlight_index}]<{node.tag_name}"
+                    if attrs_str: line_to_add += f" {attrs_str}"
+                    if text_content: line_to_add += f">{text_content}</{node.tag_name}>"
+                    else: line_to_add += " />"
+                    should_add_current_node = True
+
+                elif static_element_count < max_static_elements:
+                    # == VISIBLE STATIC ELEMENT ==
+                    common_static_tags = {'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'span', 'div', 'img', 'li', 'label', 'td', 'th'}
+                    if node.tag_name in common_static_tags or attrs_str:
+                        text_content = get_direct_visible_text(node)
+                        if attrs_str or text_content:
+                            line_to_add = f"{indent}<{node.tag_name}"
+                            if attrs_str: line_to_add += f" {attrs_str}"
+                            line_to_add += " (Static)"
+                            if text_content: line_to_add += f">{text_content}</{node.tag_name}>"
+                            else: line_to_add += " />"
+                            should_add_current_node = True
+                            # Increment static count ONLY if added
+                            static_element_count += 1
+
+            # --- Add the formatted line if needed ---
+            if should_add_current_node:
+                formatted_lines.append(line_to_add)
+                # logger.debug(f"Added line: {line_to_add}") # Optional debug
+
+            # --- ALWAYS Recurse into children (unless static limit hit) ---
+            # We recurse even if the parent wasn't added, because children might be visible/interactive
+            if not is_interactive and static_element_count >= max_static_elements:
+                 # Stop recursing down static branches if limit is hit
+                 pass
+            else:
+                 for child in node.children:
+                     # Pass DOMElementNode or DOMTextNode directly
+                     process_node(child, depth + 1)
 
 
-                    line = f"{indent}[{node.highlight_index}]<{node.tag_name}"
-                    if attrs_str:
-                        line += f" {attrs_str}"
-                    if text_content:
-                        line += f">{text_content}</{node.tag_name}>"
-                    else:
-                        line += " />" # Self-closing style if no text
-
-                    formatted_lines.append(line)
-
-                # Always process children, regardless of whether the parent was highlighted
-                for child in node.children:
-                    process_node(child, depth + 1 if node.highlight_index is None else depth) # Keep indent same if parent printed
-
-            # Text nodes are handled by get_all_text_till_next_clickable_element,
-            # so we don't explicitly process them here for the summary string.
-
-        # Start processing from the root element provided
+        # Start processing from the root element
         process_node(self, 0)
-        return '\n'.join(formatted_lines)
 
-    # get_file_upload_element can remain the same
+        # logger.debug(f"Finished generate_llm_context_string. Processed {nodes_processed_count} nodes. Added {len(formatted_lines)} lines.") # Log summary
+
+        output_str = '\n'.join(formatted_lines)
+        if static_element_count >= max_static_elements:
+             output_str += f"\n{ '  ' * 0 }... (Static element list truncated after {max_static_elements} entries)"
+        return output_str
+
 
     def get_file_upload_element(self, check_siblings: bool = True) -> Optional['DOMElementNode']:
         # Check if current element is a file input

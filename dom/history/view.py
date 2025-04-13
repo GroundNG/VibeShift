@@ -1,4 +1,4 @@
-# dom/history/view.py (Copied and imports/typing adjusted)
+# dom/history/view.py 
 from dataclasses import dataclass
 from typing import Optional, List, Dict # Added Dict
 

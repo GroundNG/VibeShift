@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 # --- Debugging Settings ---
 # Reduce delay for faster testing, increase if steps seem too fast for the page
-ARTIFICIAL_DELAY_SECS = 1.0
+ARTIFICIAL_DELAY_SECS = 2.0
 # --- End Debugging Settings ---
 
 class WebAgent:
@@ -178,6 +178,8 @@ class WebAgent:
         """Uses the LLM to break down the feature test into sequential, verifiable steps."""
         logger.info(f"Planning test steps for feature: '{feature_description}'")
         self.feature_description = feature_description # Store for context
+
+        # --- Prompt Construction ---
         prompt = f"""
         You are an AI Test Engineer. Given the feature description for testing: "{feature_description}"
 
@@ -188,24 +190,44 @@ class WebAgent:
         **Key Elements of Test Steps:**
         1.  **Navigation:** `Navigate to https://example.com/login`
         2.  **Action:** `Click element [12] (Submit Button)` or `Type 'testuser' into element [5] (Username Input)`
-        3.  **Verification:** Phrase steps clearly indicating *what* to verify.
-            - `Verify text "Login Successful" is present in element [25] (Status Message)`
-            - `Verify attribute 'href' of element [3] (Profile Link) contains '/profile'`
-            - `Extract text from element [10] (Product Price)` (Agent will store this, subsequent analysis determines pass/fail if needed)
+        3.  **Verification (IMPORTANT):**
+            *   **For Interactive Elements:** If verifying text/attributes *within* an interactive element, plan an `Extract` step first, followed by a `Verify extracted data...` step.
+                - `Extract text from element [index_of_element] (Status Message)`
+                - `Verify extracted text from previous step contains 'Success'`
+            *   **For Static Content:** If verifying text or attributes visible on the page but *not* directly interactive (e.g., success messages in `<h1>`, paragraph text, image `alt` text), phrase the step directly for verification. **Do NOT use `[index]` for static verification.**
+                - `Verify static text 'Login Successful' is present on the page`
+                - `Verify static element 'img' with attribute 'alt="Profile Picture"' exists`
+                - `Verify static text matching regex 'Order #\\d+' is present`
         4.  **Scrolling:** `Scroll down` (if needed, typically before locating an element suspected off-screen).
 
-        **Output ONLY the test steps as a JSON list of strings.** No explanations or markdown outside the list.
+        **CRITICAL INSTRUCTIONS:**
+        - Use `[index_of_...]` notation ONLY when planning an *action* (`Click`, `Type`) or *extraction* (`Extract text/attributes`) targeting an element the agent MUST interact with via its index.
+        - For verifying VISIBLE STATIC TEXT or attributes, phrase the step as a direct verification (e.g., `Verify static text '...' is present...`). Do not plan an `Extract` step for static text. The agent controller will check the visible static context directly.
+        - Separate extraction steps from verification steps for interactive elements.
 
-        Example Test Case: "Test login on example.com with user 'tester' and pass 'pwd123', then verify the welcome message contains 'tester'."
-        Example JSON Output:
+
+        **Output ONLY the test steps as a JSON list of strings.** No explanations or markdown formatting outside the list.
+
+        Example Test Case: "Test login on example.com with user 'tester' and pass 'pwd123', then verify the welcome message 'Welcome, tester!' is shown."
+        Example JSON Output (if welcome message is static H1):
         ```json
         [
           "Navigate to https://example.com/login",
           "Type 'tester' into element [index_of_username_input]",
           "Type 'pwd123' into element [index_of_password_input]",
           "Click element [index_of_login_button]",
-          "Extract text from element [index_of_welcome_message]",
-          "Verify extracted text from previous step contains 'tester'"
+          "Verify static text 'Welcome, tester!' is present on the page"
+        ]
+        ```
+        Example JSON Output (if welcome message is interactive span with index):
+        ```json
+        [
+          "Navigate to https://example.com/login",
+          "Type 'tester' into element [index_of_username_input]",
+          "Type 'pwd123' into element [index_of_password_input]",
+          "Click element [index_of_login_button]",
+          "Extract text from element [index_of_welcome_span]",
+          "Verify extracted text from previous step contains 'Welcome, tester!'"
         ]
         ```
         *(Note: The agent needs to understand how to find the correct indices dynamically based on the descriptions)*
@@ -214,43 +236,51 @@ class WebAgent:
         JSON Test Step List:
         ```json
         """
-        logger.debug(f"[TEST PLAN] Sending Subtask Planning Prompt:\n{prompt[:500]}...")
-        response = self.gemini_client.generate_text(prompt)
-        logger.debug(f"[TEST PLAN] LLM RAW response:\n{response[:500]}...")
+        # --- End Prompt ---
 
+        logger.debug(f"[TEST PLAN] Sending Subtask Planning Prompt (snippet):\n{prompt[:500]}...")
+        response = self.gemini_client.generate_text(prompt)
+        logger.debug(f"[TEST PLAN] LLM RAW response (snippet):\n{response[:500]}...")
+
+        # --- Response Parsing ---
         subtasks = None
+        json_str = None # Initialize json_str
         try:
+             # Prioritize extracting from markdown block
              match = re.search(r"```(?:json)?\s*(\[.*?\])\s*```", response, re.DOTALL | re.IGNORECASE)
              if match:
                  json_str = match.group(1).strip()
-                 logger.debug("[TEST PLAN] Extracted JSON list from markdown block for test steps.")
+                 logger.debug("[TEST PLAN] Extracted JSON list from markdown block.")
              else:
+                  # Fallback: Try parsing the whole response if it looks like a list
                   stripped_response = response.strip()
                   if stripped_response.startswith('[') and stripped_response.endswith(']'):
                        json_str = stripped_response
                        logger.debug("[TEST PLAN] Attempting to parse entire response as JSON list.")
                   else:
-                       json_str = None
                        logger.warning("[TEST PLAN] Could not find JSON list in markdown or as full response.")
 
+             # Proceed if json_str was found either way
              if json_str:
                   # Attempt to fix potential trailing commas before parsing
                   json_str_fixed = re.sub(r',\s*\]', ']', json_str)
                   json_str_fixed = re.sub(r',\s*\}', '}', json_str_fixed)
                   parsed_list = json.loads(json_str_fixed)
+                  # Validate the parsed structure
                   if isinstance(parsed_list, list) and all(isinstance(s, str) and s for s in parsed_list):
-                      subtasks = parsed_list
+                      subtasks = parsed_list # Assign the valid list
                   else:
                        logger.warning(f"[TEST PLAN] Parsed JSON is not a list of non-empty strings: {parsed_list}")
 
         except json.JSONDecodeError as e:
              logger.error(f"[TEST PLAN] Failed to decode JSON subtask list: {e}")
-             logger.debug(f"[TEST PLAN] Faulty JSON string for planning: {json_str}")
+             logger.debug(f"[TEST PLAN] Faulty JSON string for planning: {json_str}") # Log faulty string for debugging
         except Exception as e:
             logger.error(f"[TEST PLAN] An unexpected error occurred during subtask parsing: {e}", exc_info=True)
 
+        # --- Update Task Manager or Fail ---
         if subtasks and len(subtasks) > 0:
-            self.task_manager.add_subtasks(subtasks) # TaskManager now stores test steps
+            self.task_manager.add_subtasks(subtasks) # TaskManager stores test steps
             self._add_to_history("Test Plan Created", {"feature": feature_description, "steps": subtasks})
             logger.info(f"Successfully planned {len(subtasks)} test steps.")
             logger.debug(f"[TEST PLAN] Planned Steps: {subtasks}")
@@ -260,7 +290,6 @@ class WebAgent:
             # For testing, failing to plan is a critical failure.
             raise ValueError("Failed to generate a valid test plan from the feature description.")
 
-
     def _get_extracted_data_summary(self) -> str:
         """Provides a concise summary of recently extracted data for the LLM (useful for verification steps)."""
         if not self.extracted_data_history:
@@ -269,13 +298,13 @@ class WebAgent:
         summary = "Recently Extracted Data (Most Recent First - useful for verification):\n"
         start_index = max(0, len(self.extracted_data_history) - self.max_extracted_data_history)
         for entry in reversed(self.extracted_data_history[start_index:]):
-             data_snippet = str(entry.get('data', ''))
-             if len(data_snippet) > 150: data_snippet = data_snippet[:147] + "..."
-             step_desc_snippet = entry.get('subtask_desc', 'N/A')[:50] + ('...' if len(entry.get('subtask_desc', 'N/A')) > 50 else '')
-             # Include index and potentially selector for context
-             index_info = f"Index:[{entry.get('index', '?')}]"
-             selector_info = f" Sel:'{entry.get('selector', '')[:30]}...'" if entry.get('selector') else ""
-             summary += f"- Step {entry.get('subtask_index', '?')+1} ('{step_desc_snippet}'): {index_info}{selector_info} Type={entry.get('type')}, Data={data_snippet}\n"
+            data_snippet = str(entry.get('data', ''))
+            if len(data_snippet) > 150: data_snippet = data_snippet[:147] + "..."
+            step_desc_snippet = entry.get('subtask_desc', 'N/A')[:50] + ('...' if len(entry.get('subtask_desc', 'N/A')) > 50 else '')
+            # Include index and potentially selector for context
+            index_info = f"Index:[{entry.get('index', '?')}]"
+            selector_info = f" Sel:'{entry.get('selector', '')[:30]}...'" if entry.get('selector') else ""
+            summary += f"- Step {entry.get('subtask_index', '?')+1} ('{step_desc_snippet}'): {index_info}{selector_info} Type={entry.get('type')}, Data={data_snippet}\n"
         return summary.strip()
 
 
@@ -287,7 +316,7 @@ class WebAgent:
                                ) -> Optional[Dict[str, Any]]:
         """Uses LLM to determine the specific browser action for the current test step based on structured DOM."""
         logger.info(f"Determining next action for test step: '{current_task['description']}'")
-
+        logger.critical(f"dom_context_str: {dom_context_str}")
         prompt = f"""
 You are an expert AI web testing agent controller. Your goal is to decide the *single next browser action* to execute the current test step, using the provided interactive element context.
 
@@ -298,8 +327,11 @@ You are an expert AI web testing agent controller. Your goal is to decide the *s
 
 **Input Context:**
 
-**1. Interactive Element Context (Key Elements):**
-This is the structured view of interactive elements detected. Use the `[index]` number to specify the target element.
+**1. Visible Element Context (Interactive & Static):**
+This section shows visible elements on the page.
+- **Interactive elements** are marked with `[index]` (e.g., `[12]<button ...>Submit</button>`). Use the `index` number to target these elements for actions (`click`, `type`, `extract_...`).
+- **Static elements** are marked with `(Static)` and have NO index (e.g., `<p (Static)>Welcome back, user!</p>`, `<img src="logo.png" alt="Company Logo" (Static) />`). Use the information (text, attributes like 'alt' or 'href') from static elements *only* for **verification steps** (e.g., checking if specific text exists, if an image alt text is correct). **Do NOT attempt to use an index for static elements.**
+
 ```html
 {dom_context_str}
 ```
@@ -368,20 +400,29 @@ This is the structured view of interactive elements detected. Use the `[index]` 
             prompt += "\n**3. Screenshot Analysis:** Not available for this step.\n"
 
         # Add extracted data history for verification steps
-        prompt += f"\n**4. Recently Extracted Data (CRITICAL for Verification Steps):**\n{self._get_extracted_data_summary()}\n**If the current step is a verification (e.g., 'Verify text...'), check if the relevant data in this history matches the expectation. If not, use `subtask_failed`.**\n"
+        prompt += f"\n**4. Recently Extracted Data (CRITICAL for Verification Steps):**\n{self._get_extracted_data_summary()}\n**If the current step is a verification (e.g., 'Verify text...'), check BOTH the static elements in the Visible Element Context AND the relevant data in this history. If the expectation isn't met in either relevant place, use `subtask_failed`.**"
 
         # Final instruction
         prompt += """
 **Your Decision:**
-Based on the feature, test step, element context, history, errors, and extracted data, determine the **single best next action**.
-- **Choose the `index` number carefully from the Interactive Element Context** for actions targeting specific elements. Match the element description in the step to the context.
-- If the required element isn't listed, consider scrolling (`scroll`) or failing the step (`subtask_failed`).
-- If the step requires verification, check the extracted data history. If it fails the check, use `subtask_failed` with a clear reason.
+Based on the feature, test step, element context (interactive `[index]` and static `(Static)`), history, errors, and extracted data, determine the **single best next action**.
+- **Choose the `index` number carefully from the context** for actions targeting specific *interactive* elements only.
+- For **verification steps**:
+    - Check static elements (no index, marked `(Static)`) in the Visible Element Context for required text or attributes.
+    - Check the 'Recently Extracted Data' history if the verification depends on previously extracted values.
+    - If the verification condition is NOT met based on visible static context OR extracted data history, use `subtask_failed` with a clear reason explaining the mismatch.
+- If the required *interactive* element isn't listed, consider scrolling (`scroll`) or failing (`subtask_failed`).
 - If extraction succeeds but verification is based on it, use `subtask_complete` for the extraction step.
 
-Output your decision strictly as a JSON object with reasoning related to the test step execution/verification.
+Output your decision strictly as a JSON object with reasoning. related to the test step execution/verification.
 ```json
 """
+        prompt += "**VERIFICATION LOGIC: If the Current Test Step starts with 'Verify', 'Check', 'Assert', etc., you MUST:**\n"
+        prompt += "1. Examine the 'Recently Extracted Data' history.\n"
+        prompt += "2. Compare the relevant data from history against the condition in the test step description.\n"
+        prompt += "3. If the condition is MET, output `subtask_complete`.\n"
+        prompt += "4. If the condition is NOT MET, output `subtask_failed` with a reason explaining the mismatch.\n"
+        prompt += "5. If the necessary data is NOT in history (e.g., extraction failed previously), output `subtask_failed` explaining data is missing.\n"
         # --- End Prompt Construction ---
 
         logger.debug(f"[LLM PROMPT] Sending prompt snippet for action determination:\n{prompt[:500]}...")
@@ -739,23 +780,24 @@ Output your decision strictly as a JSON object with reasoning related to the tes
                     logger.debug(f"[AGENT] Current URL: {current_url}")
 
                     if not current_url.startswith("Error"):
-                         # Get structured DOM, highlight if not headless
-                         should_highlight = not self.browser_controller.headless
-                         logger.debug(f"[AGENT] Requesting structured DOM (highlight={should_highlight})...")
-                         self._latest_dom_state = self.browser_controller.get_structured_dom(
-                             highlight_elements=should_highlight,
-                             viewport_expansion=0 # Focus on viewport
-                         )
+                        # Get structured DOM, highlight if not headless
+                        should_highlight = not self.browser_controller.headless
+                        logger.debug(f"[AGENT] Requesting structured DOM (highlight={should_highlight})...")
+                        self._latest_dom_state = self.browser_controller.get_structured_dom(
+                            highlight_elements=should_highlight,
+                            viewport_expansion=0 # Focus on viewport
+                        )
 
-                         if self._latest_dom_state and self._latest_dom_state.element_tree:
-                              # Generate string for LLM
-                              dom_context_str = self._latest_dom_state.element_tree.clickable_elements_to_string(
-                                   include_attributes=['id', 'name', 'class', 'aria-label', 'placeholder', 'role', 'type', 'value', 'title', 'href'] # Include href
-                              )
-                              logger.debug(f"[AGENT] Generated DOM context string (length: {len(dom_context_str)}).")
-                         else:
-                              dom_context_str = "Error processing DOM structure."
-                              logger.error("[AGENT] Failed to get valid DOM state.")
+                        if self._latest_dom_state and self._latest_dom_state.element_tree:
+                            # Generate string for LLM using the NEW method
+                            dom_context_str = self._latest_dom_state.element_tree.generate_llm_context_string(
+                                include_attributes=['id', 'name', 'class', 'aria-label', 'placeholder', 'role', 'type', 'value', 'title', 'href', 'alt', 'data-testid'] # Customize as needed
+                                # max_static_elements=75 # Adjust limit if needed
+                            )
+                            logger.debug(f"[AGENT] Generated DOM context string (length: {len(dom_context_str)}).")
+                        else:
+                            dom_context_str = "Error processing DOM structure."
+                            logger.error("[AGENT] Failed to get valid DOM state.")
                     else:
                         dom_context_str = "Error: Could not get current URL."
 
@@ -857,10 +899,9 @@ Output your decision strictly as a JSON object with reasoning related to the tes
                          logger.warning(f"Test step {current_task_index + 1} failed, retrying (Attempt {current_attempts+1})...")
                          time.sleep(random.uniform(1.0, 2.0)) # Delay before retry
 
-                # Update task status via TaskManager if loop didn't break
-                if run_status["status"] != "FAIL": # Avoid double update if already marked failed and broken
-                    logger.debug(f"[AGENT] Updating step {current_task_index+1} status to '{new_status}' with result='{str(update_result)[:100]}...', error='{update_error}'")
-                    self.task_manager.update_subtask_status(current_task_index, new_status, result=update_result, error=update_error)
+                # Update task status via TaskManager after every attempt completion
+                logger.debug(f"[AGENT] Updating step {current_task_index+1} status to '{new_status}' with result='{str(update_result)[:100]}...', error='{update_error}'")
+                self.task_manager.update_subtask_status(current_task_index, new_status, result=update_result, error=update_error)
 
                 # --- Clear Highlights After Action (if applicable) ---
                 if self._latest_dom_state and not self.browser_controller.headless:

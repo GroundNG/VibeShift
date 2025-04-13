@@ -86,21 +86,29 @@ class TaskManager:
         """Updates the status of a specific test step."""
         if 0 <= index < len(self.subtasks):
             task = self.subtasks[index]
-
+            current_status = task["status"]
             # Allow update only if forced or if task is 'in_progress'
-            if not force_update and task["status"] != "in_progress":
-                logger.warning(f"Attempted to update status of test step {index + 1} ('{task['description'][:50]}...') "
-                            f"from '{task['status']}' to '{status}', but it's not 'in_progress'. Ignoring (unless force_update=True).")
-                return
+            # if not force_update and task["status"] != "in_progress":
+            #     logger.warning(f"Attempted to update status of test step {index + 1} ('{task['description'][:50]}...') "
+            #                 f"from '{task['status']}' to '{status}', but it's not 'in_progress'. Ignoring (unless force_update=True).")
+            #     return
+            
+            # Log if the status is actually changing
+            if current_status != status:
+                logger.info(f"Updating Test Step {index + 1} status from '{current_status}' to '{status}'.")
+            else:
+                 logger.debug(f"Test Step {index + 1} status already '{status}'. Updating result/error.")
 
             task["status"] = status
             task["result"] = result
-            task["error"] = error
+            task["error"] = error if status != 'done' else None
 
-            log_message = f"Test Step {index + 1} ('{task['description'][:50]}...') status updated to: {status}."
-            if result: log_message += f" Result: {str(result)[:100]}..."
-            if error: log_message += f" Error: {error}"
-            logger.info(log_message)
+            log_message = f"Test Step {index + 1} ('{task['description'][:50]}...') processed. Status: {status}."
+            if result and status == 'done': log_message += f" Result: {str(result)[:100]}..."
+            if error and status == 'failed': log_message += f" Error: {error}"
+            # Use debug for potentially repetitive updates if status doesn't change
+            log_level = logging.INFO if current_status != status else logging.DEBUG
+            logger.log(log_level, log_message)
 
             # Log permanent failure clearly
             if status == "failed" and task["attempts"] > self.max_retries_per_subtask:
@@ -148,7 +156,9 @@ class TaskManager:
         in_progress = sum(1 for t in self.subtasks if t['status'] == 'in_progress')
         pending = sum(1 for t in self.subtasks if t['status'] == 'pending')
 
-        summary += f"Progress: {done} Done | {perm_failed} Failed (Perm.) | {failed_retryable} Failed (Retrying) | {in_progress} In Progress | {pending} Pending (Total Steps: {total}).\n"
+        # Recalculate 'completed' for the summary string (done + perm_failed)
+        completed_count = done + perm_failed
+        summary += f"Progress Summary: {done} Done | {perm_failed} Failed (Perm.) | {failed_retryable} Failed (Retryable) | {in_progress} In Progress | {pending} Pending (Total: {total})" 
 
         # Find the current or next step for detailed status
         current_or_next_idx = -1
@@ -161,9 +171,9 @@ class TaskManager:
                   current_or_next_idx = self.current_subtask_index
                   status_detail = f"In Progress (Attempt {task['attempts']})"
                   active_task = task
-             elif task['status'] == 'pending': # Should be caught by loop below, but check
+             elif task['status'] == 'pending' or (task['status'] == 'failed' and task['attempts'] <= self.max_retries_per_subtask):
                   current_or_next_idx = self.current_subtask_index
-                  status_detail = "Pending"
+                  status_detail = f"Next Step ({task['status']})"
                   active_task = task
 
         # If not currently in progress, find the *next* pending or retryable
@@ -176,13 +186,20 @@ class TaskManager:
                        break
 
         if active_task:
-            summary += f"Current/Next Step (#{current_or_next_idx + 1} - {status_detail}): {active_task['description']}"
+            summary += f"\nCurrent/Next Step (#{current_or_next_idx + 1} - {status_detail}): {active_task['description']}"
             if active_task.get('error'): # Show last error if retrying or just failed
                  summary += f"\n  Last Error: {active_task['error']}"
         elif self.is_complete():
-             summary += "All test steps processed."
+             # Check final outcome
+             if all(t['status'] == 'done' for t in self.subtasks):
+                  summary += "\nStatus: All test steps completed successfully."
+             else:
+                  failed_count = sum(1 for t in self.subtasks if t['status'] == 'failed' and t['attempts'] > self.max_retries_per_subtask)
+                  summary += f"\nStatus: Test finished. {failed_count} step(s) failed permanently."
+
         else:
-             summary += "Test steps processing status unclear."
+             # This case should ideally not be reached if logic is sound
+             summary += "\nStatus: Test steps processing status unclear."
 
 
         return summary

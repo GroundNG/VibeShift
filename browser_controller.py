@@ -69,9 +69,9 @@ class BrowserController:
             logger.info("Starting Playwright...")
             self.playwright = sync_playwright().start()
             # Consider adding args for anti-detection if needed:
-            # browser_args = ['--disable-blink-features=AutomationControlled']
-            # self.browser = self.playwright.chromium.launch(headless=self.headless, args=browser_args)
-            self.browser = self.playwright.chromium.launch(headless=self.headless)
+            browser_args = ['--disable-blink-features=AutomationControlled']
+            self.browser = self.playwright.chromium.launch(headless=self.headless, args=browser_args)
+            # self.browser = self.playwright.chromium.launch(headless=self.headless)
 
             self.context = self.browser.new_context(
                  user_agent=self._get_random_user_agent(),
