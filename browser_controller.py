@@ -5,7 +5,7 @@ import time
 import random
 import json
 import os
-from typing import Optional, Any, Dict, List
+from typing import Optional, Any, Dict, List, Callable
 
 from dom.service import DomService
 from dom.views import DOMState, DOMElementNode, SelectorMap
@@ -29,6 +29,89 @@ Object.defineProperty(navigator, 'webdriver', {
 });
 """
 
+# --- JavaScript for click listener and selector generation ---
+CLICK_LISTENER_JS = """
+async () => {
+    // Reset/Initialize the global flag/variable
+  window._recorder_override_selector = undefined;
+  console.log('[Recorder Listener] Attaching click listener...');
+  const clickHandler = async (event) => {
+    console.log('[Recorder Listener] Click detected!');
+    event.preventDefault();
+    event.stopPropagation();
+
+    const targetElement = event.target;
+    if (!targetElement) {
+      console.warn('[Recorder Listener] Click event has no target.');
+      return;
+    }
+
+    // --- Simple Selector Generation (enhance as needed) ---
+    let selector = '';
+    if (targetElement.id) {
+      selector = `#${targetElement.id.trim()}`;
+    } else if (targetElement.getAttribute('data-testid')) {
+      selector = `[data-testid="${targetElement.getAttribute('data-testid').trim()}"]`;
+    } else if (targetElement.name) {
+       selector = `${targetElement.tagName.toLowerCase()}[name="${targetElement.name.trim()}"]`;
+    } else {
+       // Fallback: Very basic XPath -> CSS approximation (needs improvement for robustness)
+       let path = '';
+       let current = targetElement;
+       while (current && current.tagName && current.tagName.toLowerCase() !== 'body') {
+         let segment = current.tagName.toLowerCase();
+         const parent = current.parentElement;
+         if (parent) {
+            const siblings = Array.from(parent.children);
+            const sameTagSiblings = siblings.filter(sib => sib.tagName === current.tagName);
+            if (sameTagSiblings.length > 1) {
+                const index = sameTagSiblings.indexOf(current) + 1;
+                segment += `:nth-of-type(${index})`;
+            }
+         }
+         path = segment + (path ? ' > ' + path : '');
+         current = parent;
+       }
+       selector = path ? `body > ${path}` : targetElement.tagName.toLowerCase();
+    }
+    console.log(`[Recorder Listener] Generated selector: ${selector}`);
+    // -----------------------------------------------------
+
+    window._recorder_override_selector = selector;
+    console.log('[Recorder Listener] Override selector variable set.');
+    
+    // Remove the listener after one click
+    document.body.removeEventListener('click', clickHandler, { capture: true });
+    console.log('[Recorder Listener] Listener removed.');
+  };
+
+  // Add listener in capture phase to catch clicks first
+  document.body.addEventListener('click', clickHandler, { capture: true });
+  window._recorderClickListener = clickHandler; // Store reference to remove later
+}
+"""
+
+REMOVE_CLICK_LISTENER_JS = """
+() => {
+  let removed = false;
+  // Remove listener
+  if (window._recorderClickListener) {
+    document.body.removeEventListener('click', window._recorderClickListener, { capture: true });
+    delete window._recorderClickListener;
+    console.log('[Recorder Listener] Listener explicitly removed.');
+    removed = true;
+  } else {
+    console.log('[Recorder Listener] No active listener found to remove.');
+  }
+  // Clean up global variable
+  if (window._recorder_override_selector !== undefined) {
+      delete window._recorder_override_selector;
+      console.log('[Recorder Listener] Override selector variable cleaned up.');
+  }
+  return removed;
+}
+"""
+
 
 class BrowserController:
     """Handles Playwright browser automation tasks, including console message capture."""
@@ -44,6 +127,172 @@ class BrowserController:
         self._dom_service: Optional[DomService] = None
         self.console_messages: List[Dict[str, Any]] = [] # <-- Add list to store messages
         logger.info(f"BrowserController initialized (headless={headless}).")
+
+
+    # Recorder Methods begin =============
+    def setup_click_listener(self) -> bool:
+        """Injects JS to listen for the next user click and report the selector."""
+        if self.headless:
+             logger.error("Cannot set up click listener in headless mode.")
+             return False
+        if not self.page:
+            logger.error("Page not initialized. Cannot set up click listener.")
+            return False
+        try:
+            # Inject and run the listener setup JS
+            # It now resets the flag internally before adding the listener
+            self.page.evaluate(CLICK_LISTENER_JS)
+            logger.info("JavaScript click listener attached (using pre-exposed callback).")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to set up recorder click listener: {e}", exc_info=True)
+            return False
+
+    def remove_click_listener(self) -> bool:
+        """Removes the injected JS click listener."""
+        if self.headless: return True # Nothing to remove
+        if not self.page:
+            logger.warning("Page not initialized. Cannot remove click listener.")
+            return False
+        try:
+            removed = self.page.evaluate(REMOVE_CLICK_LISTENER_JS)
+
+            return removed
+        except Exception as e:
+            logger.error(f"Failed to remove recorder click listener: {e}", exc_info=True)
+            return False
+
+    def wait_for_user_click_or_timeout(self, timeout_seconds: float) -> Optional[str]:
+        """
+        Waits for the user to click (triggering the callback) or for the timeout.
+        Returns the selector if clicked, None otherwise.
+        MUST be called after setup_click_listener.
+        """
+        if self.headless: return None
+        if not self.page:
+             logger.error("Page not initialized. Cannot wait for click function.")
+             return None
+
+        selector_result = None
+        js_condition = "() => window._recorder_override_selector !== undefined"
+        timeout_ms = timeout_seconds * 1000
+
+        logger.info(f"Waiting up to {timeout_seconds}s for user click (checking JS flag)...")
+
+        try:
+            # Wait for the JS condition to become true
+            self.page.wait_for_function(js_condition, timeout=timeout_ms)
+
+            # If wait_for_function completes without timeout, the flag was set
+            logger.info("User click detected (JS flag set)!")
+            # Retrieve the value set by the click handler
+            selector_result = self.page.evaluate("window._recorder_override_selector")
+            logger.debug(f"Retrieved selector from JS flag: {selector_result}")
+
+        except PlaywrightTimeoutError:
+            logger.info("Timeout reached waiting for user click (JS flag not set).")
+            selector_result = None # Timeout occurred
+        except Exception as e:
+             logger.error(f"Error during page.wait_for_function: {e}", exc_info=True)
+             selector_result = None # Treat other errors as timeout/failure
+
+        finally:
+             # Clean up the JS listener and the flag regardless of outcome
+             self.remove_click_listener()
+
+        return selector_result
+
+    # Recorder methods end
+
+    # Highlighting elements
+    def highlight_element(self, selector: str, index: int, color: str = "#FF0000", text: Optional[str] = None):
+        """Highlights an element using a specific selector and index label."""
+        if self.headless or not self.page: return
+        try:
+            self.page.evaluate("""
+                (args) => {
+                    const { selector, index, color, text } = args;
+                    const HIGHLIGHT_CONTAINER_ID = "bw-highlight-container"; // Unique ID
+
+                    let container = document.getElementById(HIGHLIGHT_CONTAINER_ID);
+                    if (!container) {
+                        container = document.createElement("div");
+                        container.id = HIGHLIGHT_CONTAINER_ID;
+                        container.style.position = "fixed";
+                        container.style.pointerEvents = "none";
+                        container.style.top = "0";
+                        container.style.left = "0";
+                        container.style.width = "0"; // Occupy no space
+                        container.style.height = "0";
+                        container.style.zIndex = "2147483646"; // Below listener potentially
+                        document.body.appendChild(container);
+                    }
+
+                    const element = document.querySelector(selector);
+                    if (!element) {
+                        console.warn(`[Highlighter] Element not found for selector: ${selector}`);
+                        return;
+                    }
+                    const rect = element.getBoundingClientRect();
+                    if (!rect || rect.width === 0 || rect.height === 0) return; // Don't highlight non-rendered
+
+                    const overlay = document.createElement("div");
+                    overlay.style.position = "fixed";
+                    overlay.style.border = `2px solid ${color}`;
+                    overlay.style.backgroundColor = color + '1A'; // 10% opacity
+                    overlay.style.pointerEvents = "none";
+                    overlay.style.boxSizing = "border-box";
+                    overlay.style.top = `${rect.top}px`;
+                    overlay.style.left = `${rect.left}px`;
+                    overlay.style.width = `${rect.width}px`;
+                    overlay.style.height = `${rect.height}px`;
+                    overlay.style.zIndex = "2147483646";
+                    overlay.setAttribute('data-highlight-selector', selector); // Mark for cleanup
+                    container.appendChild(overlay);
+
+                    const label = document.createElement("div");
+                    const labelText = text ? `${index}: ${text}` : `${index}`;
+                    label.style.position = "fixed";
+                    label.style.background = color;
+                    label.style.color = "white";
+                    label.style.padding = "1px 4px";
+                    label.style.borderRadius = "4px";
+                    label.style.fontSize = "10px";
+                    label.style.fontWeight = "bold";
+                    label.style.zIndex = "2147483647";
+                    label.textContent = labelText;
+                    label.setAttribute('data-highlight-selector', selector); // Mark for cleanup
+
+                    // Position label top-left, slightly offset
+                    let labelTop = rect.top - 18;
+                    let labelLeft = rect.left;
+                     // Adjust if label would go off-screen top
+                    if (labelTop < 0) labelTop = rect.top + 2;
+
+                    label.style.top = `${labelTop}px`;
+                    label.style.left = `${labelLeft}px`;
+                    container.appendChild(label);
+                }
+            """, {"selector": selector, "index": index, "color": color, "text": text})
+        except Exception as e:
+            logger.warning(f"Failed to highlight element '{selector}': {e}")
+
+    def clear_highlights(self):
+        """Removes all highlight overlays and labels added by highlight_element."""
+        if self.headless or not self.page: return
+        try:
+            self.page.evaluate("""
+                () => {
+                    const container = document.getElementById("bw-highlight-container");
+                    if (container) {
+                        container.innerHTML = ''; // Clear contents efficiently
+                    }
+                }
+            """)
+            # logger.debug("Cleared highlights.")
+        except Exception as e:
+            logger.warning(f"Could not clear highlights: {e}")
 
     def _handle_console_message(self, message: ConsoleMessage):
         """Callback function to handle console messages."""
@@ -93,9 +342,7 @@ class BrowserController:
             self.page.on('console', self._handle_console_message)
             logger.info("Attached console message listener to the page.")
             # -----------------------------
-
             logger.info("Browser context and page created.")
-            logger.info(f"Using User-Agent: {self.page.evaluate('navigator.userAgent')}")
 
         except Exception as e:
             logger.error(f"Failed to start Playwright or launch browser: {e}", exc_info=True)
@@ -144,8 +391,15 @@ class BrowserController:
 
     def close(self):
         """Closes the browser and stops Playwright."""
+        self.remove_click_listener() 
         try:
             self._dom_service = None
+            if self.page and not self.page.is_closed():
+                # logger.debug("Closing page...") # Added for clarity
+                self.page.close()
+                # logger.debug("Page closed.")
+            else:
+                logger.debug("Page already closed or not initialized.")
             if self.context:
                  self.context.close()
                  logger.info("Browser context closed.")
@@ -164,36 +418,55 @@ class BrowserController:
             self.playwright = None
             self.console_messages = [] # Clear messages on final close
 
-    def get_structured_dom(self, highlight_elements: bool = True, viewport_expansion: int = 0) -> Optional[DOMState]:
+
+
+    def get_structured_dom(self, highlight_all_clickable_elements: bool = True, viewport_expansion: int = 0) -> Optional[DOMState]:
         """
         Uses DomService to get a structured representation of the interactive DOM elements.
 
         Args:
-            highlight_elements: Whether to visually highlight elements in the browser.
+            highlight_all_clickable_elements: Whether to visually highlight elements in the browser.
             viewport_expansion: Pixel value to expand the viewport for element detection (0=viewport only, -1=all).
 
         Returns:
             A DOMState object containing the element tree and selector map, or None on error.
         """
-        if not self.page or not self._dom_service:
+        highlight_all_clickable_elements = False # SETTING TO FALSE TO AVOID CONFUSION WITH NEXT ACTION HIGHLIGHT
+        
+        if not self.page:
             logger.error("Browser/Page not initialized or DomService unavailable.")
             return None
+        if not self._dom_service:
+            self._dom_service = DomService(self.page)
+
+
+        # --- RECORDER MODE: Never highlight via JS during DOM build ---
+        # Highlighting is done separately by BrowserController.highlight_element
+        if self.headless == False: # Assume non-headless is recorder mode context
+             highlight_all_clickable_elements = False
+        # --- END RECORDER MODE ---
+        
+        if not self._dom_service:
+            logger.error("DomService unavailable.")
+            return None
+
         try:
-            logger.info(f"Requesting structured DOM (highlight={highlight_elements}, expansion={viewport_expansion})...")
+            logger.info(f"Requesting structured DOM (highlight={highlight_all_clickable_elements}, expansion={viewport_expansion})...")
             start_time = time.time()
             dom_state = self._dom_service.get_clickable_elements(
-                highlight_elements=highlight_elements,
+                highlight_elements=highlight_all_clickable_elements,
                 focus_element=-1, # Not focusing on a specific element for now
                 viewport_expansion=viewport_expansion
             )
             end_time = time.time()
             logger.info(f"Structured DOM retrieved in {end_time - start_time:.2f}s. Found {len(dom_state.selector_map)} interactive elements.")
-            # Optional: Generate CSS selectors immediately after getting the state
-            # for node in dom_state.selector_map.values():
-            #      if not node.css_selector:
-            #           node.css_selector = DomService._enhanced_css_selector_for_element(node)
-
+            # Generate selectors immediately for recorder use
+            if dom_state and dom_state.selector_map:
+                for node in dom_state.selector_map.values():
+                     if not node.css_selector:
+                           node.css_selector = self.get_selector_for_node(node)
             return dom_state
+        
         except Exception as e:
             logger.error(f"Error getting structured DOM: {type(e).__name__}: {e}", exc_info=True)
             return None
@@ -374,6 +647,7 @@ class BrowserController:
             
             logger.debug(f"Trying to 'fill' locator for '{selector}' (includes actionability checks)...")
             try:
+                if not self.headless: time.sleep(0.2)
                 locator.fill(text, timeout=self.default_action_timeout) # Use default action timeout
                 logger.info(f"'fill' successful for element: {selector}")
                 self._human_like_delay(0.3, 0.8) # Delay after successful input
@@ -389,7 +663,7 @@ class BrowserController:
                 # Ensure element is clear before typing as a fallback precaution
                 locator.clear(timeout=self.default_action_timeout * 0.5) # Quick clear attempt
                 self._human_like_delay(0.1, 0.3)
-                typing_delay_ms = random.uniform(70, 150)
+                typing_delay_ms = random.uniform(90, 180)
                 locator.type(text, delay=typing_delay_ms, timeout=self.default_action_timeout)
                 logger.info(f"Fallback 'type' successful for element: {selector}")
                 self._human_like_delay(0.3, 0.8)

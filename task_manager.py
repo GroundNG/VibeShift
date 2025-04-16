@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 class TaskManager:
     """Manages the main task, subtasks, progress, and status."""
 
-    def __init__(self, max_retries_per_subtask: int = 1): # Renamed parameter for clarity internally
+    def __init__(self, max_retries_per_subtask: int = 2): # Renamed parameter for clarity internally
         self.main_task: str = "" # Stores the overall feature description
         self.subtasks: List[Dict[str, Any]] = [] # Stores the individual test steps
         self.current_subtask_index: int = 0 # Index of the step being processed or next to process
@@ -40,6 +40,7 @@ class TaskManager:
                 "attempts": 0,
                 "result": None, # Store result of the step (e.g., extracted text)
                 "error": None,  # Store error if the step failed
+                "_recorded_": False,
                 "last_failed_selector": None # Store selector if failure was element-related
             })
         self.current_subtask_index = 0 if self.subtasks else -1 # Reset index
@@ -54,9 +55,11 @@ class TaskManager:
         Iterates sequentially.
         """
         for index, task in enumerate(self.subtasks):
+            # In recorder mode, 'failed' means AI suggestion failed, allow retry
+            # In executor mode (if used here), 'failed' means execution failed
             is_pending = task["status"] == "pending"
             is_retryable_failure = (task["status"] == "failed" and
-                                    task["attempts"] <= self.max_retries_per_subtask) # Use <= for retries
+                                    task["attempts"] <= self.max_retries_per_subtask)
 
             if is_pending or is_retryable_failure:
                  # Found the next actionable step
@@ -101,11 +104,11 @@ class TaskManager:
 
             task["status"] = status
             task["result"] = result
-            task["error"] = error if status != 'done' else None
+            task["error"] = error
 
             log_message = f"Test Step {index + 1} ('{task['description'][:50]}...') processed. Status: {status}."
             if result and status == 'done': log_message += f" Result: {str(result)[:100]}..."
-            if error and status == 'failed': log_message += f" Error: {error}"
+            if error: log_message += f" Error/Note: {error}"
             # Use debug for potentially repetitive updates if status doesn't change
             log_level = logging.INFO if current_status != status else logging.DEBUG
             logger.log(log_level, log_message)
@@ -149,6 +152,7 @@ class TaskManager:
             return summary + "No test steps defined yet."
 
         done = sum(1 for t in self.subtasks if t['status'] == 'done')
+        skipped = sum(1 for t in self.subtasks if t['status'] == 'skipped')
         # Failed permanently means status is 'failed' AND attempts > max_retries
         perm_failed = sum(1 for t in self.subtasks if t['status'] == 'failed' and t['attempts'] > self.max_retries_per_subtask)
         # Failed with retries means status is 'failed' AND attempts <= max_retries
@@ -158,7 +162,7 @@ class TaskManager:
 
         # Recalculate 'completed' for the summary string (done + perm_failed)
         completed_count = done + perm_failed
-        summary += f"Progress Summary: {done} Done | {perm_failed} Failed (Perm.) | {failed_retryable} Failed (Retryable) | {in_progress} In Progress | {pending} Pending (Total: {total})" 
+        summary += f"Progress Summary: {done} Done | {skipped} Skipped |  {perm_failed} Failed (Perm.) | {failed_retryable} Failed (Retryable) | {in_progress} In Progress | {pending} Pending (Total: {total})" 
 
         # Find the current or next step for detailed status
         current_or_next_idx = -1
