@@ -46,7 +46,39 @@ class TaskManager:
         self.current_subtask_index = 0 if self.subtasks else -1 # Reset index
         logger.info(f"Added {len(test_step_list)} test steps.")
 
+    def insert_subtasks(self, index: int, new_step_descriptions: List[str]):
+        """Inserts new test steps at a specific index."""
+        if not isinstance(new_step_descriptions, list) or not all(isinstance(s, str) and s for s in new_step_descriptions):
+            logger.error(f"Invalid new step list format received for insertion: {new_step_descriptions}")
+            return False # Indicate failure
 
+        if not (0 <= index <= len(self.subtasks)): # Allow insertion at the end
+             logger.error(f"Invalid index {index} for inserting subtasks (Total steps: {len(self.subtasks)}).")
+             return False
+
+        new_tasks = []
+        for desc in new_step_descriptions:
+            new_tasks.append({
+                "description": desc,
+                "status": "pending", # New tasks start as pending
+                "attempts": 0,
+                "result": None,
+                "error": None,
+                "_recorded_": False, # Ensure internal flags are initialized
+                "last_failed_selector": None
+            })
+
+        # Insert the new tasks into the list
+        self.subtasks[index:index] = new_tasks
+        logger.info(f"Inserted {len(new_tasks)} new subtasks at index {index}.")
+
+        # Crucial: If the insertion happens at or before the current index,
+        # we might need to adjust the current index, but generally, the next call
+        # to get_next_subtask() should find the newly inserted pending tasks if they
+        # are before the previously 'current' task. Let get_next_subtask handle finding the next actionable item.
+        # If insertion happens *after* current processing index, it doesn't immediately affect flow.
+
+        return True # Indicate success
 
 
     def get_next_subtask(self) -> Optional[Dict[str, Any]]:

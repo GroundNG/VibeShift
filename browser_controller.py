@@ -311,7 +311,55 @@ class BrowserController:
         log_level = logging.WARNING if msg_type in ['error', 'warning'] else logging.DEBUG
         logger.log(log_level, f"[CONSOLE.{msg_type.upper()}] {msg_text}")
 
+    def check(self, selector: str): 
+        """Checks a checkbox or radio button."""
+        if not self.page:
+            raise PlaywrightError("Browser not started.")
+        try:
+            logger.info(f"Attempting to check element: {selector}")
+            locator = self.page.locator(selector).first
+            # check() includes actionability checks (visible, enabled)
+            locator.check(timeout=self.default_action_timeout)
+            logger.info(f"Checked element: {selector}")
+            self._human_like_delay(0.2, 0.5) # Small delay after checking
+        except PlaywrightTimeoutError as e:
+            logger.error(f"Timeout ({self.default_action_timeout}ms) waiting for element '{selector}' to be actionable for check.")
+            # Add screenshot on failure
+            screenshot_path = f"output/check_timeout_{selector.replace(' ','_').replace(':','_').replace('>','_')[:30]}_{int(time.time())}.png"
+            self.save_screenshot(screenshot_path)
+            logger.error(f"Saved screenshot on check timeout to: {screenshot_path}")
+            raise PlaywrightTimeoutError(f"Timeout trying to check element: '{selector}'. Check visibility and enabled state. Screenshot: {screenshot_path}") from e
+        except PlaywrightError as e:
+            logger.error(f"PlaywrightError checking element '{selector}': {e}")
+            raise PlaywrightError(f"Failed to check element '{selector}': {e}") from e
+        except Exception as e:
+            logger.error(f"Unexpected error checking '{selector}': {e}", exc_info=True)
+            raise PlaywrightError(f"Unexpected error checking element '{selector}': {e}") from e
 
+    def uncheck(self, selector: str):
+        """Unchecks a checkbox."""
+        if not self.page:
+            raise PlaywrightError("Browser not started.")
+        try:
+            logger.info(f"Attempting to uncheck element: {selector}")
+            locator = self.page.locator(selector).first
+            # uncheck() includes actionability checks
+            locator.uncheck(timeout=self.default_action_timeout)
+            logger.info(f"Unchecked element: {selector}")
+            self._human_like_delay(0.2, 0.5) # Small delay
+        except PlaywrightTimeoutError as e:
+            logger.error(f"Timeout ({self.default_action_timeout}ms) waiting for element '{selector}' to be actionable for uncheck.")
+            screenshot_path = f"output/uncheck_timeout_{selector.replace(' ','_').replace(':','_').replace('>','_')[:30]}_{int(time.time())}.png"
+            self.save_screenshot(screenshot_path)
+            logger.error(f"Saved screenshot on uncheck timeout to: {screenshot_path}")
+            raise PlaywrightTimeoutError(f"Timeout trying to uncheck element: '{selector}'. Screenshot: {screenshot_path}") from e
+        except PlaywrightError as e:
+            logger.error(f"PlaywrightError unchecking element '{selector}': {e}")
+            raise PlaywrightError(f"Failed to uncheck element '{selector}': {e}") from e
+        except Exception as e:
+            logger.error(f"Unexpected error unchecking '{selector}': {e}", exc_info=True)
+            raise PlaywrightError(f"Unexpected error unchecking element '{selector}': {e}") from e
+        
     def start(self):
         """Starts Playwright, launches browser, creates context/page, and attaches console listener."""
         try:

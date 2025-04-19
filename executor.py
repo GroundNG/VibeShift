@@ -30,7 +30,7 @@ class TestExecutor:
         if not selector:
             raise ValueError("Selector cannot be empty.")
         try:
-            return self.page.locator(selector)
+            return self.page.locator(selector).first
         except Exception as e:
             # Catch errors during locator creation itself (e.g., invalid selector syntax)
             logger.error(f"Failed to create locator for selector: '{selector}'. Error: {e}")
@@ -70,13 +70,16 @@ class TestExecutor:
 
             # --- Setup Browser ---
             self.browser_controller = BrowserController(headless=self.headless)
+            # Set default timeout before starting the page
+            self.browser_controller.default_action_timeout = self.default_timeout
+            self.browser_controller.default_navigation_timeout = max(self.default_timeout, 30000) # Ensure navigation timeout is reasonable
             self.browser_controller.start()
             self.page = self.browser_controller.page
             if not self.page:
                  raise PlaywrightError("Failed to initialize browser page.")
-            # Set default timeout for the page context
+            # Re-apply default timeout to the page context AFTER it's created
             self.page.set_default_timeout(self.default_timeout)
-            logger.info(f"Browser page initialized with default timeout: {self.default_timeout}ms")
+            logger.info(f"Browser page initialized with default action timeout: {self.default_timeout}ms")
 
             # --- Execute Steps ---
             for i, step in enumerate(steps):
@@ -112,6 +115,14 @@ class TestExecutor:
                          if direction not in ["up", "down"]: raise ValueError("Invalid 'direction'.")
                          amount = "window.innerHeight" if direction=="down" else "-window.innerHeight"
                          self.page.evaluate(f"window.scrollBy(0, {amount})")
+                    elif action == "check": # <-- New Action
+                         if not selector: raise ValueError("Missing 'selector' for check action.")
+                         # Use the browser_controller method which handles locator/timeout
+                         self.browser_controller.check(selector)
+                    elif action == "uncheck": # <-- New Action
+                         if not selector: raise ValueError("Missing 'selector' for uncheck action.")
+                         # Use the browser_controller method
+                         self.browser_controller.uncheck(selector)
                     elif action == "wait_for_load_state":
                          state = params.get("state", "load")
                          self.page.wait_for_load_state(state, timeout=self.browser_controller.default_navigation_timeout) # Use navigation timeout
@@ -156,6 +167,16 @@ class TestExecutor:
                          if expected_count is None: raise ValueError("Missing 'expected_count'.")
                          locator = self._get_locator(selector)
                          expect(locator).to_have_count(expected_count, timeout=self.default_timeout)
+                    elif action == "assert_checked":
+                         if not selector: raise ValueError("Missing 'selector' for assert_checked.")
+                         locator = self._get_locator(selector)
+                         # Use Playwright's dedicated assertion for checked state
+                         expect(locator).to_be_checked(timeout=self.default_timeout)
+                    elif action == "assert_not_checked":
+                         if not selector: raise ValueError("Missing 'selector' for assert_not_checked.")
+                         locator = self._get_locator(selector)
+                         # Use .not modifier with the checked assertion
+                         expect(locator).not_to_be_checked(timeout=self.default_timeout)
                     # --- Add more actions/assertions as needed ---
                     else:
                         logger.warning(f"Unsupported action type '{action}' found in step {step_id}. Skipping.")

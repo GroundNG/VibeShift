@@ -100,7 +100,8 @@ if __name__ == "__main__":
                 max_iterations=MAX_TEST_ITERATIONS,
                 max_history_length=MAX_HISTORY_FOR_LLM,
                 max_retries_per_subtask=MAX_STEP_RETRIES,
-                is_recorder_mode=True # Add a flag to agent
+                is_recorder_mode=True, # Add a flag to agent
+                # automated_mode=True
             )
 
             # --- Get Feature Description ---

@@ -302,48 +302,41 @@ class DomService:
         # 1. ID (if reasonably unique-looking)
         if 'id' in element.attributes and element.attributes['id']:
             element_id = element.attributes['id'].strip()
-            # Basic validation: not just numbers, no spaces, common framework patterns to avoid?
             if element_id and not element_id.isdigit() and ' ' not in element_id and ':' not in element_id:
-                 # Escape the ID value for the selector
                  escaped_id = escape_css(element_id)
                  selector = f"#{escaped_id}"
-                 # logger.debug(f"Selector Strategy: Using ID for {element.tag_name}: {selector}")
-                 # Add tag name for specificity if ID is very generic (e.g., "button", "item") - crude check
-                 if len(element_id) < 6 and element.tag_name != 'div':
+                 # If ID seems generic, add tag name
+                 if len(element_id) < 6 and element.tag_name not in ['div', 'span']: # Don't add for generic containers unless ID is short
                      return f"{element.tag_name}{selector}"
                  return selector
 
-        # 2. Stable Data Attributes (data-testid, data-test-id, data-cy, etc.)
+        # 2. Stable Data Attributes
         for test_attr in ['data-testid', 'data-test-id', 'data-cy', 'data-qa']:
             if test_attr in element.attributes and element.attributes[test_attr]:
                 val = element.attributes[test_attr].strip()
                 if val:
-                     # Escape the attribute value
                      escaped_val = escape_css(val)
                      selector = f"[{test_attr}='{escaped_val}']"
-                     # logger.debug(f"Selector Strategy: Using Test Attribute for {element.tag_name}: {selector}")
-                     # Add tag name for specificity if value is generic
+                     # Add tag name if value seems generic
                      if len(val) < 5:
-                          return f"{element.tag_name}{selector}"
+                         return f"{element.tag_name}{selector}"
                      return selector
 
-        # 3. Name Attribute (Common for forms)
+        # 3. Name Attribute
         if 'name' in element.attributes and element.attributes['name']:
              name_val = element.attributes['name'].strip()
              if name_val:
-                  # Escape the name value
                   escaped_name = escape_css(name_val)
                   selector = f"{element.tag_name}[name='{escaped_name}']"
-                  # logger.debug(f"Selector Strategy: Using Name Attribute for {element.tag_name}: {selector}")
                   return selector
 
-        # 4. Aria-label (If specific and not overly long)
+        # 4. Aria-label
         if 'aria-label' in element.attributes and element.attributes['aria-label']:
              aria_label = element.attributes['aria-label'].strip()
-             if aria_label and len(aria_label) < 80: # Avoid very long labels
+             # Ensure label is reasonably specific (not just whitespace or very short)
+             if aria_label and len(aria_label) > 2 and len(aria_label) < 80:
                   escaped_label = escape_css(aria_label)
                   selector = f"{element.tag_name}[aria-label='{escaped_label}']"
-                  # logger.debug(f"Selector Strategy: Using aria-label for {element.tag_name}: {selector}")
                   return selector
 
         # 5. Placeholder (for inputs)
@@ -352,74 +345,122 @@ class DomService:
              if placeholder:
                   escaped_placeholder = escape_css(placeholder)
                   selector = f"input[placeholder='{escaped_placeholder}']"
-                  # logger.debug(f"Selector Strategy: Using placeholder for input: {selector}")
                   return selector
 
-        # 6. Role Attribute (if specific)
-        # Avoid generic roles like 'presentation', 'group'
-        specific_roles = {'button', 'link', 'menuitem', 'tab', 'checkbox', 'radio', 'textbox', 'searchbox', 'combobox', 'option', 'heading'}
-        if 'role' in element.attributes and element.attributes['role']:
-            role = element.attributes['role'].strip()
-            if role in specific_roles:
-                 selector = f"{element.tag_name}[role='{role}']"
-                 # logger.debug(f"Selector Strategy: Using specific role for {element.tag_name}: {selector}")
-                 return selector
+        # --- Text Content Strategy (Use cautiously) ---
+        # Get DIRECT, visible text content of the element itself
+        direct_text = ""
+        if element.is_visible: # Only consider text if element is visible
+            texts = []
+            for child in element.children:
+                if isinstance(child, DOMTextNode) and child.is_visible:
+                    texts.append(child.text.strip())
+            direct_text = ' '.join(filter(None, texts)).strip()
 
-        # --- Fallbacks (Use with caution) ---
+        # 6. Specific Text Content (if short, unique-looking, and element type is suitable)
+        suitable_text_tags = {'button', 'a', 'span', 'label', 'legend', 'h1', 'h2', 'h3', 'h4', 'p', 'li', 'td', 'th', 'dt', 'dd'}
+        if direct_text and element.tag_name in suitable_text_tags and 2 < len(direct_text) < 60: # Avoid overly long or short text
+             # Basic check for uniqueness (could be improved by checking siblings)
+             # Check if it looks like dynamic content (e.g., numbers only, dates) - skip if so
+             if not direct_text.isdigit() and not re.match(r'^\$?[\d,.]+$', direct_text): # Avoid pure numbers/prices
+                # Use Playwright's text selector (escapes internally)
+                # Note: This requires Playwright >= 1.15 or so for :text pseudo-class
+                # Using :has-text is generally safer as it looks within descendants too,
+                # but here we specifically want the *direct* text match.
+                # Let's try combining tag and text for specificity.
+                # Playwright handles quotes inside the text automatically.
+                selector = f"{element.tag_name}:text-is('{direct_text}')"
+                # Alternative: :text() - might be less strict about whitespace
+                # selector = f"{element.tag_name}:text('{direct_text}')"
+                # Let's try to validate this selector immediately if possible (costly)
+                # For now, return it optimistically.
+                return selector
 
-        # 7. Class Names (Filter for stability, combine with tag)
-        selector = element.tag_name
-        added_class = False
+        # --- Fallbacks (Structure and Class) ---
+        base_selector = element.tag_name
+        stable_classes_used = []
+
+        # 7. Stable Class Names (Filter more strictly)
         if 'class' in element.attributes and element.attributes['class']:
             classes = element.attributes['class'].strip().split()
-            # Filter out classes with numbers, excessive hyphens/underscores, common BEM modifiers/states
             stable_classes = [
                 c for c in classes
                 if c and not c.isdigit() and
-                   not re.search(r'\d', c) and # No digits
-                   not re.match(r'.*(--|__|is-|has-|js-).+', c) and # Avoid common modifiers/states/js hooks
-                   len(c) > 2 # Avoid very short/generic classes
+                   not re.search(r'\d', c) and # No digits at all
+                   not re.match(r'.*(--|__|is-|has-|js-|active|selected|disabled|hidden).*', c, re.IGNORECASE) and # Avoid common states/modifiers/js
+                   not re.match(r'^[a-zA-Z]{1,2}$', c) and # Avoid 1-2 letter classes (often layout helpers)
+                   len(c) > 2 and len(c) < 30 # Reasonable length
             ]
             if stable_classes:
-                # Sort for consistency
                 stable_classes.sort()
-                selector += '.' + '.'.join(escape_css(c) for c in stable_classes)
-                added_class = True
-                # logger.debug(f"Selector Strategy: Using Tag + Stable Classes for {element.tag_name}: {selector}")
+                stable_classes_used = stable_classes # Store for nth-of-type check
+                base_selector += '.' + '.'.join(escape_css(c) for c in stable_classes)
 
-        # 8. Add :nth-of-type if multiple siblings match the current selector part
-        # This is a complex fallback and can be brittle. Only use if essential.
-        if element.parent:
+        # --- Ancestor Context (Find nearest stable ancestor) ---
+        # Try to find a parent with ID or data-testid to anchor the selector
+        stable_ancestor_selector = None
+        current = element.parent
+        depth = 0
+        max_depth = 4 # How far up to look for an anchor
+        while current and depth < max_depth:
+            ancestor_selector_part = None
+            if 'id' in current.attributes and current.attributes['id']:
+                 ancestor_id = current.attributes['id'].strip()
+                 if ancestor_id and not ancestor_id.isdigit() and ' ' not in ancestor_id:
+                      ancestor_selector_part = f"#{escape_css(ancestor_id)}"
+            elif not ancestor_selector_part: # Check testid only if ID not found
+                for test_attr in ['data-testid', 'data-test-id']:
+                    if test_attr in current.attributes and current.attributes[test_attr]:
+                        val = current.attributes[test_attr].strip()
+                        if val:
+                            ancestor_selector_part = f"[{test_attr}='{escape_css(val)}']"
+                            break # Found one
+            # If we found a stable part for the ancestor, use it
+            if ancestor_selector_part:
+                stable_ancestor_selector = ancestor_selector_part
+                break # Stop searching up
+            current = current.parent
+            depth += 1
+
+        # Combine ancestor and base selector if ancestor found
+        final_selector = f"{stable_ancestor_selector} >> {base_selector}" if stable_ancestor_selector else base_selector
+
+        # 8. Add :nth-of-type ONLY if multiple siblings match the current selector AND no unique attribute/text was found
+        # This check becomes more complex with the ancestor path. We simplify here.
+        # Only add nth-of-type if we didn't find a unique ID/testid/name/text for the element itself.
+        needs_disambiguation = (stable_ancestor_selector is None) and \
+                               (base_selector == element.tag_name or base_selector.startswith(element.tag_name + '.')) # Only tag or tag+class
+
+        if needs_disambiguation and element.parent:
             try:
-                # Generate a selector for the current element *without* nth-of-type
-                base_selector_for_siblings = selector if added_class else element.tag_name
-
-                # Find siblings matching the base selector
-                matching_siblings = [
-                    sib for sib in element.parent.children
-                    if isinstance(sib, DOMElementNode) and \
-                       (sib.tag_name == element.tag_name) and \
-                       (not added_class or DomService._check_classes_match(sib, stable_classes)) # Check classes if used
-                ]
+                # Find siblings matching the base selector part (tag + potentially classes)
+                matching_siblings = []
+                for sib in element.parent.children:
+                    if isinstance(sib, DOMElementNode) and sib.tag_name == element.tag_name:
+                        # Check classes if they were used in the base selector
+                        if stable_classes_used:
+                            if DomService._check_classes_match(sib, stable_classes_used):
+                                matching_siblings.append(sib)
+                        else: # No classes used, just match tag
+                            matching_siblings.append(sib)
 
                 if len(matching_siblings) > 1:
                      try:
                           index = matching_siblings.index(element) + 1
-                          selector += f':nth-of-type({index})'
-                          # logger.debug(f"Selector Strategy: Added nth-of-type({index}) for disambiguation: {selector}")
+                          final_selector += f':nth-of-type({index})'
                      except ValueError:
-                          logger.warning(f"Element not found in its own filtered sibling list for nth-of-type calculation. Selector: {selector}")
+                          logger.warning(f"Element not found in its own filtered sibling list for nth-of-type. Selector: {final_selector}")
             except Exception as e:
-                logger.warning(f"Error during nth-of-type calculation: {e}. Selector: {selector}")
+                logger.warning(f"Error during nth-of-type calculation: {e}. Selector: {final_selector}")
 
-        # 9. FINAL FALLBACK: Use original XPath (Least desirable)
-        # If the selector is still just the tag name, it's likely not specific enough.
-        if selector == element.tag_name and element.xpath:
-             logger.warning(f"Selector for {element.tag_name} is not specific. Falling back to XPath as selector: {element.xpath}")
-             return element.xpath # Use XPath as a last resort CSS=XPath
+        # 9. FINAL FALLBACK: Use original XPath if selector is still not specific
+        if final_selector == element.tag_name and element.xpath:
+             logger.warning(f"Selector for {element.tag_name} is just the tag. Falling back to XPath: {element.xpath}")
+             # Returning XPath directly might cause issues if executor expects CSS.
+             # Playwright can handle css=<xpath>, so let's return that.
+             return f"css={element.xpath}"
 
-        # logger.debug(f"Final generated selector for {element.tag_name} (xpath: {element.xpath}): {selector}")
-        return selector
+        return final_selector
     
     @staticmethod
     def _check_classes_match(element: DOMElementNode, required_classes: List[str]) -> bool:

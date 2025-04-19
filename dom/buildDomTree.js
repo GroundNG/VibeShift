@@ -962,14 +962,34 @@
         attributes: {},
         xpath: getXPathTree(node, true),
         children: [],
+        isVisible: false,
+        isTopElement: false,
+        isInteractive: false,
+        isInViewport: false,
+        highlightIndex: null,
+        shadowRoot: false,
+        pageCoordinates: null,
+        viewportCoordinates: null,
+        viewportInfo: null
       };
-  
-      // Get attributes for interactive elements or potential text containers
-      if (isInteractiveCandidate(node) || node.tagName.toLowerCase() === 'iframe' || node.tagName.toLowerCase() === 'body') {
+
+
+      try { 
         const attributeNames = node.getAttributeNames?.() || [];
-        for (const name of attributeNames) {
-          nodeData.attributes[name] = node.getAttribute(name);
+        if (attributeNames && attributeNames.length > 0) {
+          for (const name of attributeNames) {
+              // Make sure getAttribute doesn't throw error (e.g., for weird frameworks)
+              try {
+                  nodeData.attributes[name] = node.getAttribute(name);
+              } catch (attrError) {
+                  // console.warn(`Could not get attribute '${name}' for ${node.tagName}:`, attrError);
+                  nodeData.attributes[name] = '[Error retrieving value]'; // Indicate error
+              }
+          }
         }
+      } catch (e) {
+        // console.warn(`Error getting attribute names for ${node.tagName}:`, e);
+        // Continue even if attribute collection fails partially
       }
   
       // if (isInteractiveCandidate(node)) {
