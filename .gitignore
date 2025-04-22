@@ -1,5 +1,8 @@
 .env
-/__pycache__
+__pycache__/
+*.pyc
 /.venv
 /output
 ignore-*
+.DS_Store
+

@@ -206,13 +206,13 @@ class BrowserController:
     # Recorder methods end
 
     # Highlighting elements
-    def highlight_element(self, selector: str, index: int, color: str = "#FF0000", text: Optional[str] = None):
+    def highlight_element(self, selector: str, index: int, color: str = "#FF0000", text: Optional[str] = None, node_xpath: Optional[str] = None):
         """Highlights an element using a specific selector and index label."""
         if self.headless or not self.page: return
         try:
             self.page.evaluate("""
                 (args) => {
-                    const { selector, index, color, text } = args;
+                    const { selector, index, color, text, node_xpath } = args;
                     const HIGHLIGHT_CONTAINER_ID = "bw-highlight-container"; // Unique ID
 
                     let container = document.getElementById(HIGHLIGHT_CONTAINER_ID);
@@ -229,11 +229,37 @@ class BrowserController:
                         document.body.appendChild(container);
                     }
 
-                    const element = document.querySelector(selector);
+                    let element = null;
+                    try {
+                        element = document.querySelector(selector);
+                    } catch (e) {
+                        console.warn(`[Highlighter] querySelector failed for '${selector}': ${e.message}.`);
+                        element = null; // Ensure element is null if querySelector fails
+                    }
+
+                    // --- Fallback to XPath if CSS failed AND xpath is available ---
+                    if (!element && node_xpath) {
+                        console.log(`[Highlighter] Falling back to XPath: ${node_xpath}`);
+                        try {
+                            element = document.evaluate(
+                                node_xpath,
+                                document,
+                                null,
+                                XPathResult.FIRST_ORDERED_NODE_TYPE,
+                                null
+                            ).singleNodeValue;
+                        } catch (e) {
+                            console.error(`[Highlighter] XPath evaluation failed for '${node_xpath}': ${e.message}`);
+                            element = null;
+                        }
+                    }
+                    // ------------------------------------------------------------
+
                     if (!element) {
-                        console.warn(`[Highlighter] Element not found for selector: ${selector}`);
+                        console.warn(`[Highlighter] Element not found using selector '${selector}' or XPath '${node_xpath}'. Cannot highlight.`);
                         return;
                     }
+
                     const rect = element.getBoundingClientRect();
                     if (!rect || rect.width === 0 || rect.height === 0) return; // Don't highlight non-rendered
 
@@ -274,7 +300,7 @@ class BrowserController:
                     label.style.left = `${labelLeft}px`;
                     container.appendChild(label);
                 }
-            """, {"selector": selector, "index": index, "color": color, "text": text})
+            """, {"selector": selector, "index": index, "color": color, "text": text, "node_xpath": node_xpath})
         except Exception as e:
             logger.warning(f"Failed to highlight element '{selector}': {e}")
 

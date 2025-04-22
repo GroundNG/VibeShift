@@ -1,7 +1,7 @@
 # dom/views.py 
 from dataclasses import dataclass, field, KW_ONLY # Use field for default_factory
 from functools import cached_property
-from typing import TYPE_CHECKING, Dict, List, Optional, Union, Literal 
+from typing import TYPE_CHECKING, Dict, List, Optional, Union, Literal, Tuple
 import re # Added for selector generation
 
 # Use relative imports if within the same package structure
@@ -149,21 +149,31 @@ class DOMElementNode(DOMBaseNode):
             max_static_elements_action: int = 50, # Max static elements for action context
             max_static_elements_verification: int = 150, # Allow more static elements for verification context
             context_purpose: Literal['action', 'verification'] = 'action' # New parameter
-        ) -> str:
+        ) -> Tuple[str, Dict[str, 'DOMElementNode']]:
         """
         Generates a string representation of VISIBLE elements tree for LLM context.
         Clearly distinguishes interactive elements (with index) from static ones.
+        Assigns temporary IDs to static elements for later lookup.
 
         Args:
             include_attributes: List of specific attributes to include. If None, uses defaults.
             max_static_elements_action: Max static elements for 'action' purpose.
             max_static_elements_verification: Max static elements for 'verification' purpose.
             context_purpose: 'action' (concise) or 'verification' (more inclusive static).
+            
+        Returns:
+            Tuple containing:
+                - The formatted context string.
+                - A dictionary mapping temporary static IDs (e.g., "s1", "s2")
+                  to the corresponding DOMElementNode objects.
+
         """
         formatted_lines = []
         processed_node_ids = set()
         static_element_count = 0
         nodes_processed_count = 0 
+        static_id_counter = 1 # Counter for temporary static IDs
+        temp_static_id_map: Dict[str, 'DOMElementNode'] = {} # Map temporary ID to node
 
         max_static_elements = max_static_elements_verification if context_purpose == 'verification' else max_static_elements_action
 
@@ -199,22 +209,19 @@ class DOMElementNode(DOMBaseNode):
             return None
 
         def process_node(node: Union['DOMElementNode', DOMTextNode], depth: int) -> None:
-            nonlocal static_element_count, nodes_processed_count # Allow modification
+            nonlocal static_element_count, nodes_processed_count, static_id_counter # Allow modification
 
             # Skip if already processed or not an element
-            if not isinstance(node, DOMElementNode):
-                return
-
+            if not isinstance(node, DOMElementNode): return
             nodes_processed_count += 1
             node_id = id(node)
-            if node_id in processed_node_ids:
-                return
+            if node_id in processed_node_ids: return
             processed_node_ids.add(node_id)
 
-            # --- Decide whether to ADD the CURRENT node to output ---
             should_add_current_node = False
             line_to_add = ""
             is_interactive = node.highlight_index is not None
+            temp_static_id_assigned = None # Track if ID was assigned to this node
 
             # Only consider adding the node if it's visible
             if node.is_visible:
@@ -272,12 +279,21 @@ class DOMElementNode(DOMBaseNode):
                             include_this_static = True
 
                     if include_this_static:
+                        # --- Assign temporary static ID ---
+                        current_static_id = f"s{static_id_counter}"
+                        temp_static_id_map[current_static_id] = node
+                        temp_static_id_assigned = current_static_id # Mark that ID was assigned
+                        static_id_counter += 1
+                        
                         # *** Start building the line ***
                         line_to_add = f"{indent}<{node.tag_name}"
 
                         # *** CRUCIAL: Add the calculated attributes string ***
                         if attrs_str:
                             line_to_add += f" {attrs_str}"
+                            
+                        # --- Add the static ID attribute to the string ---
+                        line_to_add += f' data-static-id="{current_static_id}"'
 
                         # *** Add the static marker ***
                         line_to_add += " (Static)"
@@ -323,7 +339,7 @@ class DOMElementNode(DOMBaseNode):
         output_str = '\n'.join(formatted_lines)
         if static_element_count >= max_static_elements:
              output_str += f"\n{ '  ' * 0 }... (Static element list truncated after {max_static_elements} entries)"
-        return output_str
+        return output_str, temp_static_id_map
 
 
     def get_file_upload_element(self, check_siblings: bool = True) -> Optional['DOMElementNode']:

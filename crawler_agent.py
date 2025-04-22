@@ -298,7 +298,7 @@ class CrawlerAgent:
                         logger.debug(f"Gathering DOM state for {current_url}...")
                         dom_state = self.browser_controller.get_structured_dom()
                         if dom_state and dom_state.element_tree:
-                            dom_context_str = dom_state.element_tree.generate_llm_context_string(context_purpose='verification') # Use verification context (more static elements)
+                            dom_context_str, _ = dom_state.element_tree.generate_llm_context_string(context_purpose='verification') # Use verification context (more static elements)
                             logger.debug(f"DOM context string generated (length: {len(dom_context_str)}).")
                         else:
                              logger.warning(f"Could not get structured DOM for {current_url}.")
