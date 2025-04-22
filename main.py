@@ -7,7 +7,8 @@ import json
 import argparse
 
 from agent import WebAgent
-from llm_client import GeminiClient
+from crawler_agent import CrawlerAgent
+from llm_client import LLMClient
 from executor import TestExecutor
 from utils import load_api_key
 import logging
@@ -27,7 +28,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="AI Web Testing Agent - Recorder & Executor")
     parser.add_argument(
         '--mode',
-        choices=['record', 'execute'],
+        choices=['record', 'execute', 'discover'],
         required=True,
         help="Mode to run the agent in: 'record' (interactive AI-assisted recording) or 'execute' (deterministic playback)."
     )
@@ -37,9 +38,20 @@ if __name__ == "__main__":
         help="Path to the JSON test file (required for 'execute' mode)."
     )
     parser.add_argument(
-        '--headless-execution',
+        '--headless',
         action='store_true', # Makes it a flag, default False
-        help="Run executor in headless mode (only applies to 'execute' mode)."
+        help="Run executor in headless mode (only applies to 'execute'/discover mode)."
+    )
+    parser.add_argument(
+        '--url', # <<< Added URL argument for discover mode
+        type=str,
+        help="Starting URL for website crawling (required for 'discover' mode)."
+    )
+    parser.add_argument(
+        '--max-pages', # <<< Added max pages argument for discover mode
+        type=int,
+        default=10,
+        help="Maximum number of pages to crawl in 'discover' mode (default: 10)."
     )
     args = parser.parse_args()
 
@@ -93,9 +105,9 @@ if __name__ == "__main__":
 
 
             # --- Initialize Components ---
-            gemini_client = GeminiClient(api_key=api_key)
+            llm_client = LLMClient(api_key=api_key)
             recorder_agent = WebAgent(
-                gemini_client=gemini_client,
+                llm_client=llm_client,
                 headless=HEADLESS_BROWSER, # Must be False
                 max_iterations=MAX_TEST_ITERATIONS,
                 max_history_length=MAX_HISTORY_FOR_LLM,
@@ -133,7 +145,7 @@ if __name__ == "__main__":
 
         elif args.mode == 'execute':
             logger.info(f"Starting in EXECUTE mode for file: {args.file}")
-            HEADLESS_BROWSER = args.headless_execution # Use flag for executor headless
+            HEADLESS_BROWSER = args.headless # Use flag for executor headless
             print(f"Running in EXECUTE mode ({'Headless' if HEADLESS_BROWSER else 'Visible Browser'}).")
 
             # Executor doesn't need LLM client directly
@@ -186,6 +198,74 @@ if __name__ == "__main__":
             except Exception as save_err:
                  logger.error(f"Failed to save full execution result JSON: {save_err}")
 
+        elif args.mode == 'discover':
+            warnings.warn(
+                "SECURITY WARNING: You are about to run an AI agent that interacts with the web based on "
+                "LLM instructions or crawling logic. Ensure the target environment is safe.",
+                UserWarning
+            )   
+            print("!!! AI WEB TESTING AGENT - DISCOVERY MODE !!!")
+            print("This agent will crawl the website starting from the provided URL.")
+            print(">> It will analyze pages and ask an LLM for test step ideas.")
+            print(">> Ensure you have permission to crawl the target website.")
+            print(f">> Crawling will be limited to the domain of '{args.url}' and max {args.max_pages} pages.")
+            print("Proceed with caution.")
+            print("*"*70 + "\n")
+            logger.info(f"Starting in DISCOVER mode for URL: {args.url}")
+            HEADLESS_BROWSER = args.headless # Use the general headless flag
+            print(f"Running in DISCOVER mode ({'Headless' if HEADLESS_BROWSER else 'Visible Browser'}).")
+            print(f"Starting URL: {args.url}")
+            print(f"Max pages to crawl: {args.max_pages}")
+
+            # Initialize Components
+            llm_client = LLMClient(api_key=api_key)
+            crawler = CrawlerAgent(
+                llm_client=llm_client,
+                headless=HEADLESS_BROWSER
+            )
+
+            # Run Discovery
+            discovery_result = crawler.crawl_and_suggest(args.url, args.max_pages)
+
+            # Display Discovery Results
+            print("\n" + "="*20 + " Discovery Result " + "="*20)
+            print(f"Status: {'SUCCESS' if discovery_result.get('success') else 'FAILED'}")
+            print(f"Message: {discovery_result.get('message', 'N/A')}")
+            print(f"Start URL: {discovery_result.get('start_url', 'N/A')}")
+            print(f"Base Domain: {discovery_result.get('base_domain', 'N/A')}")
+            print(f"Pages Visited: {discovery_result.get('pages_visited', 0)}")
+
+            discovered_steps_map = discovery_result.get('discovered_steps', {})
+            print(f"Pages with Suggested Steps: {len(discovered_steps_map)}")
+            print("-" * 58)
+
+            if discovered_steps_map:
+                print("\n--- Suggested Test Steps per Page ---")
+                for page_url, steps in discovered_steps_map.items():
+                    print(f"\n[Page: {page_url}]")
+                    if steps:
+                        for i, step_desc in enumerate(steps):
+                            print(f"  {i+1}. {step_desc}")
+                    else:
+                        print("  (No specific steps suggested by LLM for this page)")
+            else:
+                print("\nNo test step suggestions were generated.")
+
+            print("="*58)
+
+            # Save Full Discovery Results to JSON
+            if discovery_result.get('success'): # Only save if crawl succeeded somewhat
+                try:
+                     # Generate a filename based on the domain
+                     domain = discovery_result.get('base_domain', 'unknown_domain')
+                     # Sanitize domain for filename
+                     safe_domain = "".join(c if c.isalnum() else "_" for c in domain)
+                     result_filename = os.path.join("output", f"discovery_results_{safe_domain}_{time.strftime('%Y%m%d_%H%M%S')}.json")
+                     with open(result_filename, 'w', encoding='utf-8') as f:
+                         json.dump(discovery_result, f, indent=2, ensure_ascii=False)
+                     print(f"\nFull discovery result details saved to: {result_filename}")
+                except Exception as save_err:
+                     logger.error(f"Failed to save full discovery result JSON: {save_err}")
 
 
 

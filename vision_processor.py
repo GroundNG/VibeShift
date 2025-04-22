@@ -1,15 +1,15 @@
 # vision_processor.py
-from llm_client import GeminiClient
+from llm_client import LLMClient
 import logging
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 class VisionProcessor:
-    """Uses Gemini Vision to analyze screenshots for web navigation."""
+    """Uses LLM Vision to analyze screenshots for web navigation."""
 
-    def __init__(self, gemini_client: GeminiClient):
-        self.gemini_client = gemini_client
+    def __init__(self, llm_client: LLMClient):
+        self.llm_client = llm_client
         logger.info("VisionProcessor initialized.")
 
     def analyze_screenshot_for_action(self, image_bytes: bytes, task_prompt: str, failed_selector: Optional[str] = None, error_context: Optional[str] = None) -> str:
@@ -56,7 +56,7 @@ Also, based on the visual, state if any previous actions (like typing text) seem
 """
         # Removed: DO NOT just describe the whole page. Focus on the task and actionable elements/selectors.
 
-        analysis = self.gemini_client.generate_multimodal(full_prompt, image_bytes)
-        logger.info("Received screenshot analysis from Gemini Vision.")
+        analysis = self.llm_client.generate_multimodal(full_prompt, image_bytes)
+        logger.info("Received screenshot analysis from LLM Vision.")
         # logger.debug(f"Vision Analysis:\n{analysis}")
         return analysis

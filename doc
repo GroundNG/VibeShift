@@ -9,7 +9,7 @@
     *   [main.py (Entry Point)](#mainpy-entry-point)
     *   [agent.py (WebAgent)](#agentpy-webagent)
     *   [browser_controller.py (BrowserController)](#browser_controllerpy-browsercontroller)
-    *   [llm_client.py (GeminiClient)](#llm_clientpy-geminiclient)
+    *   [llm_client.py (LLMClient)](#llm_clientpy-LLMClient)
     *   [task_manager.py (TaskManager)](#task_managerpy-taskmanager)
     *   [vision_processor.py (VisionProcessor)](#vision_processorpy-visionprocessor)
     *   [executor.py (TestExecutor - *Inferred*)](#executorpy-testexecutor---inferred)
@@ -30,7 +30,7 @@
 
 ## 1. Overall Architecture and Flow
 
-This project implements an AI-assisted web testing agent capable of two primary modes: `record` and `execute`. The core idea is to use a Large Language Model (LLM) like Google Gemini to help automate the creation and execution of web UI tests.
+This project implements an AI-assisted web testing agent capable of two primary modes: `record` and `execute`. The core idea is to use a Large Language Model (LLM) like Google LLM to help automate the creation and execution of web UI tests.
 
 *   **Record Mode:** An interactive process where the user provides a high-level test case description (feature). The agent, guided by the LLM, breaks this down into planned steps. For each step, the agent interacts with the browser, fetches the current state (DOM structure), asks the LLM to suggest the specific action (e.g., click, type) and target element based on the planned step description and the visible elements. The user is prompted to confirm or override the AI's suggestion (by clicking the correct element). The confirmed/overridden action is executed, and the corresponding step (with a robust selector) is recorded into a JSON file.
 *   **Execute Mode:** A non-interactive process that takes a previously recorded JSON test file and executes the steps sequentially using the browser controller. It performs actions and assertions defined in the file and reports a Pass/Fail result. (Note: The `executor.py` code was not provided, so this flow is inferred from `main.py` and typical test execution patterns).
@@ -39,13 +39,13 @@ This project implements an AI-assisted web testing agent capable of two primary 
 
 1.  **Initialization (`main.py`):**
     *   Parses command-line arguments (`--mode record`).
-    *   Loads the Gemini API key (`utils.load_api_key`).
+    *   Loads the LLM API key (`utils.load_api_key`).
     *   Displays a security warning.
-    *   Initializes `GeminiClient` and `WebAgent` (in recorder mode, forcing non-headless).
+    *   Initializes `LLMClient` and `WebAgent` (in recorder mode, forcing non-headless).
     *   Prompts the user for a natural language feature/test case description.
 
 2.  **Test Planning (`agent.py: _plan_subtasks`):**
-    *   The `WebAgent` sends the feature description to the `GeminiClient`.
+    *   The `WebAgent` sends the feature description to the `LLMClient`.
     *   The LLM returns a list of high-level test steps (e.g., "Navigate to...", "Click login button", "Verify welcome message").
     *   The `WebAgent` populates the `TaskManager` with these planned steps.
 
@@ -62,7 +62,7 @@ This project implements an AI-assisted web testing agent capable of two primary 
         *   **Navigation/Scroll:** If the planned step is "Navigate to..." or "Scroll...", the `WebAgent` parses the URL/direction and calls `_execute_action_for_recording` directly. The step is recorded.
         *   **Verification:** If the step starts with "Verify...", `_handle_assertion_recording` is called. This prompts the user to confirm/provide a target element selector and choose an assertion type (text contains, visible, attribute equals, etc.). The assertion step is recorded.
         *   **Interactive (Click/Type):** For other steps, assumed to be clicks or types:
-            *   **AI Suggestion (`_determine_action_and_selector_for_recording`):** The `WebAgent` sends the planned step description, URL, and the formatted DOM context string (from `DOMElementNode.generate_llm_context_string`, including `[index]` markers) to the `GeminiClient`. The LLM is asked to return the `action` (click/type), the `index` of the target element from the context, and any parameters (like text to type). The agent looks up the pre-generated `suggested_selector` using the returned index from the `_latest_dom_state.selector_map`.
+            *   **AI Suggestion (`_determine_action_and_selector_for_recording`):** The `WebAgent` sends the planned step description, URL, and the formatted DOM context string (from `DOMElementNode.generate_llm_context_string`, including `[index]` markers) to the `LLMClient`. The LLM is asked to return the `action` (click/type), the `index` of the target element from the context, and any parameters (like text to type). The agent looks up the pre-generated `suggested_selector` using the returned index from the `_latest_dom_state.selector_map`.
             *   **User Interaction (`_handle_interactive_step_recording`):**
                 *   The AI's suggested element is highlighted (`BrowserController.highlight_element`).
                 *   A click listener is set up (`BrowserController.setup_click_listener`).
@@ -127,11 +127,11 @@ This project implements an AI-assisted web testing agent capable of two primary 
         *   `--mode`: 'record' or 'execute' (required).
         *   `--file`: Path to JSON test file (required for 'execute').
         *   `--headless-execution`: Flag to run executor headlessly.
-    *   Loads the `GOOGLE_API_KEY` using `utils.load_api_key`.
+    *   Loads the `LLM_API_KEY` using `utils.load_api_key`.
     *   Creates the `output/` directory if it doesn't exist.
     *   **Record Mode:**
         *   Displays a security warning.
-        *   Initializes `GeminiClient`.
+        *   Initializes `LLMClient`.
         *   Initializes `WebAgent` with `is_recorder_mode=True` and `headless=False`.
         *   Prompts user for the test case description (feature).
         *   Calls `recorder_agent.record(feature_description)`.
@@ -142,14 +142,14 @@ This project implements an AI-assisted web testing agent capable of two primary 
         *   Prints a detailed execution result summary (Pass/Fail, duration, failure details, console logs, screenshot path).
         *   Saves the full execution results dictionary to a JSON file in `output/`.
     *   Includes basic error handling for setup and execution.
-*   **Connections:** Instantiates `GeminiClient`, `WebAgent`, `TestExecutor`. Uses `utils.load_api_key`. Triggers the main methods (`record` or `run_test`).
+*   **Connections:** Instantiates `LLMClient`, `WebAgent`, `TestExecutor`. Uses `utils.load_api_key`. Triggers the main methods (`record` or `run_test`).
 
 ### `agent.py` (WebAgent)
 
 *   **Purpose:** The central orchestrator for the AI-assisted recording process. Manages state, interacts with other components (LLM, Browser, Task Manager), handles user interaction, and builds the recorded test steps.
 *   **Class: `WebAgent`**
     *   **`__init__(...)`**
-        *   Parameters: `gemini_client`, `headless` (ignored in recorder mode), `max_iterations`, `max_history_length`, `max_retries_per_subtask`, `max_extracted_data_history`, `is_recorder_mode`.
+        *   Parameters: `llm_client`, `headless` (ignored in recorder mode), `max_iterations`, `max_history_length`, `max_retries_per_subtask`, `max_extracted_data_history`, `is_recorder_mode`.
         *   Logic: Sets the mode flag (`is_recorder_mode`). Forces `headless=False` if recording. Initializes `BrowserController`, `VisionProcessor`, `TaskManager`. Initializes state variables: `history`, `extracted_data_history`, `recorded_steps`, `_current_step_id`, `_user_abort_recording`, `_latest_dom_state`. Logs initialization details.
     *   **`record(feature_description)`**
         *   Purpose: Main entry point for the recording workflow.
@@ -182,19 +182,19 @@ This project implements an AI-assisted web testing agent capable of two primary 
         *   Connections: `TaskManager`, `_plan_subtasks`, `BrowserController`, `_determine_action_and_selector_for_recording`, `_handle_interactive_step_recording`, `_handle_assertion_recording`, `_execute_action_for_recording`.
     *   **`_plan_subtasks(feature_description)`**
         *   Purpose: Uses the LLM to break down the high-level feature description into a sequence of actionable steps.
-        *   Logic: Constructs a specific prompt asking the LLM to output a JSON list of single-instruction steps (focused on *intent*, not specific selectors). Calls `GeminiClient.generate_text`. Parses the JSON list from the response. Adds the steps to `TaskManager`.
-        *   Connections: `GeminiClient`, `TaskManager`.
+        *   Logic: Constructs a specific prompt asking the LLM to output a JSON list of single-instruction steps (focused on *intent*, not specific selectors). Calls `LLMClient.generate_text`. Parses the JSON list from the response. Adds the steps to `TaskManager`.
+        *   Connections: `LLMClient`, `TaskManager`.
     *   **`_determine_action_and_selector_for_recording(...)`**
         *   Purpose: Uses the LLM to suggest the specific action (`click`/`type`) and target element (`index`) for a given planned step, based on the current DOM context.
         *   Parameters: `current_task` (from TaskManager), `current_url`, `dom_context_str` (formatted HTML with `[index]` markers).
         *   Logic:
             *   Constructs a detailed prompt including the feature, planned step, URL, retry context (if any), the indexed DOM context, and instructions on output format (JSON with `action`, `parameters.index`, `parameters.text`, `reasoning`). Explicitly tells LLM *not* to output selectors.
-            *   Calls `GeminiClient.generate_text`.
+            *   Calls `LLMClient.generate_text`.
             *   Parses the JSON response (`_clean_llm_response_to_json`).
             *   Validates the suggested action and index.
             *   If action is `click` or `type`: Looks up the target `DOMElementNode` and its pre-generated `suggested_selector` from `self._latest_dom_state.selector_map` using the suggested `index`. Ensures the selector exists (generating it if somehow missed).
             *   Returns a dictionary containing the action, parameters, `suggested_selector`, target `DOMElementNode`, and reasoning, or a failure indication.
-        *   Connections: `GeminiClient`, `_clean_llm_response_to_json`, uses `_latest_dom_state`.
+        *   Connections: `LLMClient`, `_clean_llm_response_to_json`, uses `_latest_dom_state`.
     *   **`_handle_interactive_step_recording(planned_step, suggestion)`**
         *   Purpose: Manages the user interaction loop for confirming or overriding an AI-suggested `click` or `type` action.
         *   Logic:
@@ -220,7 +220,7 @@ This project implements an AI-assisted web testing agent capable of two primary 
             *   Records the assertion step with the chosen action, final selector, and parameters in `recorded_steps`.
             *   Updates `TaskManager` status.
         *   Returns: `True` if handled (recorded/skipped), `False` if user aborted.
-        *   Connections: `GeminiClient`, `BrowserController` (highlighting), `TaskManager`.
+        *   Connections: `LLMClient`, `BrowserController` (highlighting), `TaskManager`.
     *   **`_execute_action_for_recording(action, selector, parameters)`**
         *   Purpose: Executes a *confirmed* browser action during recording. Does *not* involve AI decision-making at this stage.
         *   Logic: Takes the action type, selector (if applicable), and parameters. Calls the corresponding `BrowserController` method (`goto`, `click`, `type`, `scroll`). Adds implicit `wait_for_load_state` step after navigation. Handles potential `PlaywrightError` or `ValueError` during execution. Saves screenshot on execution failure.
@@ -285,13 +285,13 @@ This project implements an AI-assisted web testing agent capable of two primary 
         *   **`_get_random_user_agent()` & `_get_random_viewport()`:** Provide variety for browser context settings.
         *   **`_human_like_delay(min_secs, max_secs)`:** Introduces small random delays after actions.
 
-### `llm_client.py` (GeminiClient)
+### `llm_client.py` (LLMClient)
 
-*   **Purpose:** Provides a simple interface to interact with the Google Gemini API (specifically `gemini-1.5-flash` for both text and vision) while handling API key configuration and basic rate limiting.
-*   **Class: `GeminiClient`**
+*   **Purpose:** Provides a simple interface to interact with the Google LLM API (specifically `LLM-1.5-flash` for both text and vision) while handling API key configuration and basic rate limiting.
+*   **Class: `LLMClient`**
     *   **`__init__(api_key)`**
         *   Configures the `genai` library with the API key.
-        *   Initializes the generative models (`gemini-1.5-flash` for text and vision).
+        *   Initializes the generative models (`LLM-1.5-flash` for text and vision).
         *   Initializes rate limiting state: `MIN_REQUEST_INTERVAL_SECONDS`, `_last_request_time`, and a `threading.Lock` (`_lock`) for thread safety.
     *   **`_wait_for_rate_limit()`**
         *   Internal method called before each API request.
@@ -346,10 +346,10 @@ This project implements an AI-assisted web testing agent capable of two primary 
 
 ### `vision_processor.py` (VisionProcessor)
 
-*   **Purpose:** Utilizes the multimodal capabilities of the LLM (Gemini Vision) to analyze screenshots, primarily intended to provide visual context or suggest alternative selectors when standard methods fail (though selector generation is now primarily handled differently).
+*   **Purpose:** Utilizes the multimodal capabilities of the LLM (LLM Vision) to analyze screenshots, primarily intended to provide visual context or suggest alternative selectors when standard methods fail (though selector generation is now primarily handled differently).
 *   **Class: `VisionProcessor`**
-    *   **`__init__(gemini_client)`**
-        *   Stores the `GeminiClient` instance.
+    *   **`__init__(llm_client)`**
+        *   Stores the `LLMClient` instance.
     *   **`analyze_screenshot_for_action(image_bytes, task_prompt, failed_selector, error_context)`**
         *   Takes screenshot bytes and context about the current task/previous failure.
         *   Constructs a focused prompt asking the vision model to:
@@ -357,7 +357,7 @@ This project implements an AI-assisted web testing agent capable of two primary 
             *   Identify interactive elements visually.
             *   If `failed_selector` is provided, consider the error and suggest *alternative*, robust CSS selectors based on **native attributes** (ID, name, data-testid, text, etc.), explicitly avoiding AI-generated IDs like `data-ai-id`.
             *   Provide visual descriptions and approximate locations.
-        *   Calls `self.gemini_client.generate_multimodal` with the prompt and image.
+        *   Calls `self.llm_client.generate_multimodal` with the prompt and image.
         *   Returns the textual analysis from the LLM.
 
 ### `executor.py` (TestExecutor - *Inferred*)
@@ -388,7 +388,7 @@ This project implements an AI-assisted web testing agent capable of two primary 
 *   **Functions:**
     *   **`load_api_key()`:**
         *   Loads environment variables from a `.env` file (if present).
-        *   Retrieves the `GOOGLE_API_KEY` from environment variables.
+        *   Retrieves the `LLM_API_KEY` from environment variables.
         *   Raises a `ValueError` if the key is not found.
         *   Returns the API key string.
 
@@ -619,9 +619,9 @@ Defined in `dom/views.py`. These are `dataclass` instances representing the pars
     *   Python 3.x
     *   Install required libraries: `pip install -r requirements.txt` (ensure `requirements.txt` includes `playwright`, `google-generativeai`, `python-dotenv`, `pillow`, potentially `pydantic`).
     *   Install Playwright browsers: `playwright install` (or `playwright install chromium`).
-2.  **API Key:** Create a `.env` file in the project root directory and add your Google Gemini API key:
+2.  **API Key:** Create a `.env` file in the project root directory and add your Google LLM API key:
     ```
-    GOOGLE_API_KEY=YOUR_API_KEY_HERE
+    LLM_API_KEY=YOUR_API_KEY_HERE
     ```
 3.  **Running:** Use `main.py` from the command line.
     *   **Record Mode:**
@@ -642,9 +642,9 @@ Defined in `dom/views.py`. These are `dataclass` instances representing the pars
 
 # New Updates
 
-### `# Update: llm_client.py (GeminiClient)`
+### `# Update: llm_client.py (LLMClient)`
 
-*   **Model:** The code initializes and uses `gemini-1.5-flash-latest` rather than `gemini-1.5-flash`.
+*   **Model:** The code initializes and uses `LLM-1.5-flash-latest` rather than `LLM-1.5-flash`.
 *   **New Method: `generate_json(Schema_Class, prompt, image_bytes=None)`**
     *   **Purpose:** This new method is crucial for obtaining structured JSON output from the LLM, directly conforming to a predefined Pydantic schema. This replaces the previous pattern of generating text and manually parsing JSON.
     *   **Parameters:**
@@ -688,7 +688,7 @@ Defined in `dom/views.py`. These are `dataclass` instances representing the pars
 ### `# Update: agent.py (WebAgent)`
 
 *   **LLM Interaction via `generate_json`:**
-    *   All core interactions previously relying on `generate_text` followed by manual JSON parsing (`_clean_llm_response_to_json`) have been **replaced** with calls to `gemini_client.generate_json`, providing specific Pydantic schemas for expected outputs. This significantly improves reliability.
+    *   All core interactions previously relying on `generate_text` followed by manual JSON parsing (`_clean_llm_response_to_json`) have been **replaced** with calls to `llm_client.generate_json`, providing specific Pydantic schemas for expected outputs. This significantly improves reliability.
     *   **`_plan_subtasks`:** Uses `generate_json` with `PlanSubtasksSchema`.
     *   **`_get_llm_verification`:** Uses `generate_json` with `LLMVerificationSchema`. Supports multimodal input (passing `screenshot_bytes`). Performs post-parse validation (e.g., checks required fields if `verified=True`). Returns the validated result as a dictionary.
     *   **`_determine_action_and_selector_for_recording`:** Uses `generate_json` with `RecorderSuggestionSchema`.

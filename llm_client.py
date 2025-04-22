@@ -9,7 +9,7 @@ import threading # Import threading for lock
 
 logger = logging.getLogger(__name__)
 
-class GeminiClient:
+class LLMClient:
      """Handles interactions with the Google Gemini API with rate limiting."""
 
      # Rate limiting parameters (adjust based on current Gemini free tier limits)

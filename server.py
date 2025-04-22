@@ -17,7 +17,7 @@ from queue import Empty as QueueEmpty # For checking queue result
 
 # Import agent components AFTER setting sys.path
 from agent import WebAgent
-from llm_client import GeminiClient
+from llm_client import LLMClient
 from utils import load_api_key
 import uvicorn
 
@@ -90,7 +90,7 @@ def run_agent_process_target(command: str, run_headless: bool, result_queue: mp.
     try:
         process_logger.info(f"Process started. Command: '{command}' (Headless: {run_headless})")
         api_key = load_api_key() # Load API key within the process
-        gemini_client = GeminiClient(api_key=api_key)
+        llm_client = LLMClient(api_key=api_key)
 
         # Ensure output dir exists (agent might also do this)
         if not os.path.exists("output"):
@@ -102,7 +102,7 @@ def run_agent_process_target(command: str, run_headless: bool, result_queue: mp.
 
         # NOTE: Creates a NEW WebAgent instance in this separate process
         agent_instance = WebAgent(
-            gemini_client=gemini_client,
+            llm_client=llm_client,
             headless=run_headless,
             max_iterations=MAX_AGENT_ITERATIONS,
             max_history_length=MAX_HISTORY
