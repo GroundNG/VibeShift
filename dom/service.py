@@ -458,7 +458,7 @@ class DomService:
              logger.warning(f"Selector for {element.tag_name} is just the tag. Falling back to XPath: {element.xpath}")
              # Returning XPath directly might cause issues if executor expects CSS.
              # Playwright can handle css=<xpath>, so let's return that.
-             return f"css={element.xpath}"
+             return f"xpath={element.xpath}"
 
         return final_selector
     

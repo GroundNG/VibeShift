@@ -514,7 +514,7 @@ Now, generate the verification JSON for: "{verification_description}"
                             final_selector = DomService._enhanced_css_selector_for_element(target_node)
                             if not final_selector:
                                 logger.error(f"Failed to generate selector for static node (ID: {static_id}). Falling back to XPath.")
-                                final_selector = f"css={target_node.xpath}" # Fallback
+                                final_selector = f"xpath={target_node.xpath}" # Fallback
                             verification_dict["verification_selector"] = final_selector
                             verification_dict["_static_id_used"] = static_id
                             verification_dict["element_index"] = None # Ensure index is None for static
@@ -522,7 +522,7 @@ Now, generate the verification JSON for: "{verification_description}"
                         except Exception as gen_err:
                             logger.error(f"Error generating selector for static ID {static_id}: {gen_err}")
                             # Decide how to handle: fail verification? Use XPath?
-                            verification_dict["verification_selector"] = f"css={target_node.xpath}" # Fallback
+                            verification_dict["verification_selector"] = f"xpath={target_node.xpath}" # Fallback
                             verification_dict["element_index"] = None
                             verification_dict["reasoning"] += f" [Selector generation failed: {gen_err}]"
 
@@ -617,6 +617,7 @@ Now, generate the verification JSON for: "{verification_description}"
         is_verified = verification_result['verified']
         reasoning = verification_result.get('reasoning', 'N/A')
         step_handled = False # Flag to track if a decision was made
+        parameter_name = None
 
         # --- Automated Mode ---
         if self.automated_mode:
@@ -684,180 +685,118 @@ Now, generate the verification JSON for: "{verification_description}"
         else:
             print("\n" + "="*60)
             print(f"Planned Step: {planned_desc}")
-            print(f"AI Verification Result: {'PASSED' if verification_result['verified'] else 'FAILED'}")
-            print(f"AI Reasoning: {verification_result['reasoning']}")
+            print(f"Review AI Verification Result in Panel...")
+             # Highlight element if verification passed and selector exists
+            if is_verified and verification_result.get("verification_selector"):
+                final_selector = verification_result.get("verification_selector")
+                interactive_index = verification_result.get("element_index") # Optional index hint
+                static_id = verification_result.get("_static_id_used") # Optional static ID hint
+                highlight_color = "#008000" if static_id else "#0000FF" # Green for static, Blue for interactive/direct
+                highlight_text = "Verify Target (Static)" if static_id else "Verify Target"
+                highlight_idx_display = 0 if static_id else (interactive_index if interactive_index is not None else 0)
+
+                self.browser_controller.clear_highlights()
+                try:
+                    # Find node XPath if possible for better highlighting fallback
+                    target_node_xpath = None
+                    target_node = None
+                    if static_id and hasattr(self, '_last_static_id_map') and self._last_static_id_map:
+                         target_node = self._last_static_id_map.get(static_id)
+                    elif interactive_index is not None and self._latest_dom_state and self._latest_dom_state.selector_map:
+                         target_node = self._latest_dom_state.selector_map.get(interactive_index)
+
+                    if target_node: target_node_xpath = target_node.xpath
+
+                    self.browser_controller.highlight_element(final_selector, highlight_idx_display, color=highlight_color, text=highlight_text, node_xpath=target_node_xpath)
+                    print(f"AI suggests assertion on element: {final_selector}")
+                except Exception as hl_err:
+                    logger.warning(f"Could not highlight verification target '{final_selector}': {hl_err}")
+                    print(f"AI suggests assertion on element: {final_selector} (Highlight failed)")
+            else:
+                 self.browser_controller.clear_highlights() # Clear previous highlights even if failed
+                 print(f"AI Verification Result: {'PASSED (but no selector?)' if is_verified else 'FAILED'}")
+
+
             print("="*60)
 
-            final_selector = None # Initialize
-            target_node_xpath = None 
-            
-            # If verification passed, use the verification_selector and try to highlight
-            if verification_result["verified"]:
-                # --- Get Key Info from Result ---
-                final_selector = verification_result.get("verification_selector") # Primary selector
-                interactive_index = verification_result.get("element_index") # Optional interactive index
+            # Show the review panel
+            self.browser_controller.show_verification_review_panel(planned_desc, verification_result)
+
+            # Wait for user choice from panel
+            user_choice = self.browser_controller.wait_for_panel_interaction(30.0) # Give more time for review
+            if not user_choice: user_choice = 'skip' # Default to skip on timeout
+
+            # --- Process User Choice ---
+            if user_choice == 'record_ai':
+                # Should only be possible if button wasn't disabled (i.e., is_verified and selector/type exist)
+                final_selector = verification_result.get("verification_selector")
                 assertion_type = verification_result.get("assertion_type")
                 parameters = verification_result.get("parameters", {})
 
-                if not final_selector: # Should have been caught by validation in _get_llm_verification
-                    logger.error("Internal Error: Verified=true but verification_selector is missing!")
-                    print("Error: AI verification data is inconsistent (missing selector). Falling back to manual.")
-                    return self._handle_assertion_recording(planned_step) # Fallback
+                if not final_selector or not assertion_type:
+                     print("Error: Cannot record - essential info missing from AI result. Please use Manual or Skip.")
+                     # No state change, user needs to click again
+                     self.browser_controller.hide_recorder_panel() # Hide briefly
+                     return True # Return handled, but loop will continue in agent
 
-                # --- Display Verification Basis and Highlight ---
-                self.browser_controller.clear_highlights()
-                verification_basis_msg = ""
-                highlight_color = "#0000FF" # Blue default
-                target_node = None # Initialize target_node
+                print(f"Recording AI-verified assertion: {assertion_type} on {final_selector}")
 
-                if interactive_index is not None:
-                    # Verification likely confirmed by an interactive element
-                    verification_basis_msg = f"AI based verification on Interactive Element [Index: {interactive_index}]"
-                    # Try highlighting the interactive element using its map selector first   
-                    if self._latest_dom_state and self._latest_dom_state.selector_map:
-                        target_node = self._latest_dom_state.selector_map.get(interactive_index)
+                # --- Ask for Parameterization (only if needed, similar to action step) ---
+                # Example: if assertion_type requires text and we want to allow parameterization
+                # This is less common for assertions, but possible
+                # For simplicity, we'll skip parameterization prompting for assertions for now.
+                # parameter_name = None # Reset
+                # if assertion_type == "assert_text_equals" and parameters.get("expected_text"):
+                #     param_text = parameters.get("expected_text", "")
+                #     if self.browser_controller.prompt_parameterization_in_panel(param_text):
+                #          print(f"Parameterize '{param_text[:30]}...'? Enter name in panel...")
+                #          param_choice = self.browser_controller.wait_for_panel_interaction(15.0)
+                #          if param_choice == 'parameterized':
+                #              parameter_name = self.browser_controller.get_parameterization_result()
+                #              print(f"Parameter name set to: '{parameter_name}'")
+                #          else: print("Parameterization skipped.")
+                #     else: print("Could not show param UI.")
 
-                    if target_node and target_node.css_selector:
-                        try:
-                            self.browser_controller.highlight_element(target_node.css_selector, interactive_index, color=highlight_color, text="Verify Target (Interactive)", node_xpath=target_node.xpath)
-                            print(f"{verification_basis_msg} using selector: `{target_node.css_selector}`")
-                        except Exception as hl_err:
-                            logger.warning(f"Could not highlight interactive index {interactive_index} ({target_node.css_selector}): {hl_err}. Highlighting verification_selector instead.")
-                            # Fallback to highlighting verification_selector
-                            try:
-                                self.browser_controller.highlight_element(final_selector, 0, color="#FFA500", text="Verify Target (Selector)") # Orange for fallback
-                                print(f"{verification_basis_msg}. Using primary verification selector: `{final_selector}`")
-                            except Exception as hl_err2:
-                                logger.error(f"Could not highlight verification_selector either ({final_selector}): {hl_err2}")
-                                print(f"{verification_basis_msg}. Failed to highlight element. Using selector: `{final_selector}`")
+                # --- Record the Assertion Step ---
+                record = { "step_id": self._current_step_id, "action": assertion_type, "description": planned_desc,
+                           "parameters": parameters, "selector": final_selector, "wait_after_secs": 0 }
+                # if parameter_name: record["parameters"]["parameter_name"] = parameter_name # Add if implemented
 
-                    else: # Interactive index provided but node/selector not found in map
-                        logger.warning(f"LLM provided interactive index {interactive_index}, but node/selector not found in map. Relying on verification_selector.")
-                        verification_basis_msg = f"AI based verification on element (interactive index {interactive_index} not found)"
-                        # Highlight verification_selector
-                        try:
-                            self.browser_controller.highlight_element(final_selector, 0, color="#FFA500", text="Verify Target (Selector)")
-                            print(f"{verification_basis_msg}. Using primary verification selector: `{final_selector}`")
-                        except Exception as hl_err:
-                            logger.error(f"Could not highlight verification_selector ({final_selector}): {hl_err}")
-                            print(f"{verification_basis_msg}. Failed to highlight element. Using selector: `{final_selector}`")
+                self.recorded_steps.append(record)
+                self._current_step_id += 1
+                logger.info(f"Step {record['step_id']} recorded (AI Verified): {assertion_type} on {final_selector}")
+                self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "done", result=f"Recorded AI-verified assertion as step {record['step_id']}")
+                step_handled = True
 
-                else:
-                    # Verification based on a static element or non-indexed interactive element
-                    verification_basis_msg = "AI based verification on Static/Non-Indexed Element"
-                    highlight_color = "#008000" # Green for static/direct selector
+            elif user_choice == 'define_manual':
+                print("Switching to manual assertion definition...")
+                self.browser_controller.hide_recorder_panel() # Hide review panel
+                # Call the existing manual handler - it will show its own panels
+                # _handle_assertion_recording returns True if handled (recorded/skipped), False if aborted
+                if not self._handle_assertion_recording(planned_step):
+                    self._user_abort_recording = True # Propagate abort signal
+                step_handled = True # Manual path handles the step
 
-                    static_id = verification_result.get("_static_id_used") # We need to retrieve the static ID if it was used
-                    if static_id and hasattr(self, '_last_static_id_map') and self._last_static_id_map: # Check if map exists from last call
-                        target_node = self._last_static_id_map.get(static_id)
+            elif user_choice == 'skip':
+                print("Skipping verification step.")
+                self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "skipped", result="User skipped AI verification via panel")
+                step_handled = True
 
-                    if target_node:
-                        target_node_xpath = target_node.xpath # Get XPath from the node
-                        logger.debug(f"Highlighting static element. Selector='{final_selector}', XPath='{target_node_xpath}'")
-                    else:
-                        # We might not have the original node if verification_static_id wasn't used/stored
-                        logger.warning("Could not retrieve original static node for XPath fallback during highlighting.")
-                        target_node_xpath = None # Ensure it's None
-                        
-                    try:
-                        # Highlight using the verification_selector directly
-                        self.browser_controller.highlight_element(final_selector, 0, color=highlight_color, text="Verify Target (Static/Direct)", node_xpath=target_node_xpath)
-                        print(f"{verification_basis_msg} using selector: `{final_selector}`")
-                    except Exception as hl_err:
-                        logger.error(f"Could not highlight static verification element '{final_selector}' (XPath: {target_node_xpath}): {hl_err}")
-                        print(f"{verification_basis_msg}. Failed to highlight. Using selector: `{final_selector}`")
+            elif user_choice == 'abort':
+                print("Aborting recording.")
+                self._user_abort_recording = True
+                step_handled = False # Abort signal
 
-                # Display Assertion Details
-                print(f"  Suggested Assertion: `{assertion_type}`")
-                print(f"  Parameters: `{parameters}`")
+            else: # Includes timeout, None, unexpected values
+                print("Invalid choice or timeout during verification review. Skipping step.")
+                self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "skipped", result="Invalid choice/timeout on AI verification")
+                step_handled = True
 
-                # --- User Confirmation ---
-                print("\nConfirm AI Verification:")
-                print(f"  [Enter/Y] Record assertion: {assertion_type} on '{final_selector}' with params {parameters}")
-                print(f"  [M] Define Assertion Manually (override AI)")
-                print(f"  [S] Skip this verification step")
-                print(f"  [A] Abort recording")
-                user_choice = input("Your choice? > ").strip().lower()
+            # --- Cleanup UI ---
+            self.browser_controller.clear_highlights()
+            self.browser_controller.hide_recorder_panel()
 
-                if user_choice == '' or user_choice == 'y':
-                    print(f"Recording verified assertion: {assertion_type} on {final_selector}")
-                    # --- Record the Assertion Step ---
-                    record = {
-                        "step_id": self._current_step_id,
-                        "action": assertion_type,
-                        "description": planned_desc, # Use original planned description
-                        "parameters": parameters, # Use parameters from LLM verification
-                        "selector": final_selector, # Use the primary verification selector
-                        "wait_after_secs": 0
-                    }
-                    self.recorded_steps.append(record)
-                    self._current_step_id += 1
-                    logger.info(f"Step {record['step_id']} recorded (AI Verified): {assertion_type} on {final_selector}")
-                    self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "done", result=f"Recorded AI-verified assertion as step {record['step_id']}")
-                    return True # Success
-
-                elif user_choice == 'm':
-                    print("Switching to manual assertion definition...")
-                    self.browser_controller.clear_highlights() # Clear AI highlight
-                    return self._handle_assertion_recording(planned_step) # Fallback to original manual handler
-
-                elif user_choice == 's':
-                    print("Skipping verification step.")
-                    self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "skipped", result="User skipped AI verification")
-                    return True # Skip
-
-                elif user_choice == 'a':
-                    print("Aborting recording.")
-                    self._user_abort_recording = True
-                    return False # Abort
-
-                else:
-                    print("Invalid choice. Skipping verification step.")
-                    self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "skipped", result="Invalid choice on AI verification")
-                    return True # Skip
-
-            else: # Verification Failed according to LLM
-                # --- Logic for failed verification remains the same ---
-                print("\nAI could not verify the exact condition.")
-                reasoning_snippet = verification_result.get('reasoning', '')[:200] + "..."
-                print(f"  AI Reasoning: {reasoning_snippet}")
-
-                suggests_alternative = False
-                # (Keep the existing logic for checking reasoning for alternatives)
-                if "congratulations" in reasoning_snippet.lower() or \
-                "successfully logged in" in reasoning_snippet.lower() or \
-                "success message" in reasoning_snippet.lower():
-                    suggests_alternative = True
-                    print("\n  NOTE: The AI reasoning suggests success *might* have occurred differently.")
-                    print("  You might want to define the assertion manually based on what you see.")
-
-                print("\nChoose an action:")
-                if suggests_alternative:
-                    print("  [M] Define Assertion Manually (Recommended to check actual success state)")
-                else:
-                    print("  [M] Define Assertion Manually (if you believe AI is wrong)")
-                print("  [S] Skip this verification step")
-                print("  [A] Abort recording")
-                user_choice = input("Your choice? > ").strip().lower()
-
-                if user_choice == 'm':
-                    print("Switching to manual assertion definition...")
-                    self.browser_controller.clear_highlights()
-                    return self._handle_assertion_recording(planned_step) # Allow manual definition
-
-                elif user_choice == 's':
-                    print("Skipping verification step (AI check failed, user confirmed skip).")
-                    self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "skipped", result="Skipped step (AI verification failed, user chose skip)")
-                    return True # Skip
-
-                elif user_choice == 'a':
-                    print("Aborting recording.")
-                    self._user_abort_recording = True
-                    return False # Abort
-                else:
-                    print("Invalid choice. Skipping verification step.")
-                    self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "skipped", result="Invalid choice after failed AI verification")
-                    return True # Skip
+            return step_handled and not self._user_abort_recording
 
     def _trigger_re_planning(self, current_planned_task: Dict[str, Any], reason: str) -> bool:
         """
@@ -1381,7 +1320,9 @@ Respond ONLY with the JSON object matching the schema.
 
         final_selector = None
         performed_action = False
-        # should_retry_suggestion = False # Flag to indicate if execution failure should lead to retry    
+        user_choice = None
+        parameter_name = None
+        action_recorded = False # Flag to track if we actually recorded the step
 
         # --- Automated Mode ---
         if self.automated_mode:
@@ -1415,6 +1356,8 @@ Respond ONLY with the JSON object matching the schema.
                  logger.error(f"[Auto Mode] Execution FAILED using AI suggested selector: {exec_result['message']}")
                  # Mark as failed for potential re-planning or retry in the main loop
                  self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "failed", error=f"Automated execution failed: {exec_result['message']}")
+                 self.browser_controller.clear_highlights()
+                 self.browser_controller.hide_recorder_panel()
                  # Do not abort automatically, let the main loop handle failure/retry logic
                  return True # Indicate handled (failure noted), loop continues
          # --- Interactive Mode ---
@@ -1431,237 +1374,153 @@ Respond ONLY with the JSON object matching the schema.
             self.browser_controller.clear_highlights()
             self.browser_controller.highlight_element(suggested_selector, target_node.highlight_index, color="#FFA500", text="AI Suggestion") # Orange for suggestion
 
-            # Setup listener *before* prompt
+            # Show the UI Panel with options
+            suggestion_display_text = f"'{action}' on <{target_node.tag_name}>"
+            if action == "type": suggestion_display_text += f" with text '{parameters.get('text', '')[:20]}...'"
+            self.browser_controller.show_recorder_panel(planned_desc, suggestion_display_text)
+
+            # Setup listener *after* showing panel, *before* waiting
             listener_setup = self.browser_controller.setup_click_listener()
             if not listener_setup:
                 logger.error("Failed to set up click listener, cannot proceed with override.")
-                # Optionally fallback to just accepting AI suggestion? Or abort? Let's abort for safety.
-                return False # Indicate failure/abort
+                self.browser_controller.hide_recorder_panel()
+                return False # Abort
 
-
+            # --- Wait for User Interaction (Click Override OR Panel Button) ---
+            # Total time budget for interaction
+            TOTAL_INTERACTION_TIMEOUT = 20.0 # e.g., 20 seconds total
+            PANEL_WAIT_TIMEOUT = 15.0 # Time to wait for panel *after* click timeout
+            
             override_selector = None
 
-            # Use a separate thread for input to allow click detection simultaneously
-            # Note: This basic input approach might block other activities if not handled carefully.
-            # Consider more robust async/event-driven approaches for complex GUIs.
             try:
-                logger.debug("Calling wait_for_user_click_or_timeout (wait_for_function version)...")
-                # Call the updated wait function - it now returns the selector string or None
-                override_selector = self.browser_controller.wait_for_user_click_or_timeout(INTERACTIVE_TIMEOUT_SECS)
-                logger.debug(f"Returned from wait_for_user_click_or_timeout. override_selector = {override_selector}")
+                logger.debug("Waiting for user click override...")
+                # Wait for click first (short timeout)
+                click_wait_time = TOTAL_INTERACTION_TIMEOUT - PANEL_WAIT_TIMEOUT
+                override_selector = self.browser_controller.wait_for_user_click_or_timeout(click_wait_time)
 
-                # --- Handle Override First ---
-                if override_selector is not None: # Check if a selector string was returned
+                if override_selector:
                     print(f"\n[Recorder] User override detected! Using selector: {override_selector}")
-                    final_selector = override_selector
-                    performed_action = False
-
-                    # Execute the original *intended* action on the *overridden* selector
-                    print(f"Executing original action '{action}' on overridden selector...")
-                    exec_result = self._execute_action_for_recording(action, final_selector, parameters)
-                    performed_action = exec_result["success"]
-
-                    if performed_action:
-                        # --- Record the successful override step ---
-                        record = {
-                            "step_id": self._current_step_id,
-                            "action": action,
-                            "description": planned_desc,
-                            "parameters": {},
-                            "selector": final_selector,
-                            "wait_after_secs": DEFAULT_WAIT_AFTER_ACTION
-                        }
-                        if action == "type":
-                            record["parameters"]["text"] = parameters.get("text", "")
-                            param_name_input = input(f"  Parameterize value '{parameters.get('text')}'? Enter name or leave blank: ").strip()
-                            if param_name_input: record["parameters"]["parameter_name"] = param_name_input
-                        self.recorded_steps.append(record)
-                        self._current_step_id += 1
-                        logger.info(f"Step {record['step_id']} recorded (User Override): {action} on {final_selector}")
-                        self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "done", result=f"Recorded override as step {record['step_id']}")
-                        return True # <<<--- RETURN HERE: Override successful bypass console prompt
-
-                    else: # Override execution failed
-                        print(f"WARNING: Execution failed using override selector: {exec_result['message']}")
-                        retry_choice = input("Override execution failed. Skip (S) or Abort (A)? > ").strip().lower()
-                        if retry_choice == 'a':
-                            self._user_abort_recording = True
-                            return False # Abort
-                        else:
-                            print("Skipping step after failed override execution.")
-                            self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "skipped", result="Skipped after failed override execution")
-                            return True # Skip, RETURN HERE Bypass console prompt
+                    user_choice = 'override' # Special internal choice
                 else:
-                    logger.debug("No click override registered (wait_for_function timed out), prompting user via console.")
-                    prompt = (
-                        f"AI suggests '{action}' on the highlighted element with selector `{suggested_selector}`.\n"
-                        f"  Accept suggestion? (Press Enter or Y)\n"
-                        f"  Skip this step? (S)\n"
-                        f"  Abort recording? (A)\n"
-                        f"Your choice? > "
-                    )
-                    user_choice = input(prompt).strip().lower()
-
-                    # --- Process Console User Choice ---
-                    if user_choice == '' or user_choice == 'y':
-                        print("Accepting AI suggestion.")
-                        final_selector = suggested_selector
-                        performed_action = False # Initialize
-
-                        # Execute action on AI's suggested selector
-                        exec_result = self._execute_action_for_recording(action, final_selector, parameters)
-                        performed_action = exec_result["success"]
-
-                        if performed_action:
-                            # --- Record the successful AI suggestion step ---
-                            record = {
-                                "step_id": self._current_step_id,
-                                "action": action,
-                                "description": planned_desc, # Use original description
-                                "parameters": {},
-                                "selector": final_selector,
-                                "wait_after_secs": DEFAULT_WAIT_AFTER_ACTION
-                            }
-                            if action == "type":
-                                record["parameters"]["text"] = parameters.get("text", "")
-                                # Ask for parameterization
-                                param_name_input = input(f"  Parameterize value '{parameters.get('text')}'? Enter name or leave blank: ").strip()
-                                if param_name_input:
-                                    record["parameters"]["parameter_name"] = param_name_input
-
-                            self.recorded_steps.append(record)
-                            self._current_step_id += 1
-                            logger.info(f"Step {record['step_id']} recorded (AI Suggestion): {action} on {final_selector}")
-                            self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "done", result=f"Recorded AI suggestion as step {record['step_id']}")
-                            return True # Success
-
-                        else: # AI suggestion execution failed
-                            print(f"WARNING: Execution failed using AI suggested selector: {exec_result['message']}")
-                            retry_choice = input("Execution failed. Retry suggestion (R), Skip (S) or Abort (A)? > ").strip().lower()
-                            if retry_choice == 'a':
-                                self._user_abort_recording = True
-                                return False # Abort
-                            elif retry_choice == 'r':
-                                print("Marking step for retry...")
-                                current_task_index = self.task_manager.current_subtask_index
-                                self.task_manager.update_subtask_status(current_task_index, "failed", error="User requested retry after execution failure.")
-                                return True # Signal to loop to retry planning/suggestion
-                            else:
-                                print("Skipping step after failed execution.")
-                                self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "skipped", result="Skipped after failed AI suggestion execution")
-                                return True # Skip
-
-                    elif user_choice == 's':
-                        print("Skipping planned step.")
-                        self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "skipped", result="User skipped")
-                        return True # Skip
-
-                    elif user_choice == 'a':
-                        print("Aborting recording process.")
-                        self._user_abort_recording = True
-                        return False # Abort
-
+                    # Click timed out, now wait for panel interaction
+                    logger.debug("No click override. Waiting for panel interaction...")
+                    user_choice = self.browser_controller.wait_for_panel_interaction(PANEL_WAIT_TIMEOUT)
+                    if user_choice:
+                        print(f"\n[Recorder] User choice via panel: {user_choice}")
                     else:
-                        print("Invalid choice. Skipping step.")
-                        self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "skipped", result="Invalid user choice")
-                        return True # Skip
+                        print("\n[Recorder] Timeout waiting for panel interaction. Skipping step.")
+                        user_choice = 'skip' # Default to skip on timeout
 
             except Exception as e:
-                logger.error(f"Error during user interaction: {e}", exc_info=True)
-                user_choice = 'a' # Abort on error
+                logger.error(f"Error during user interaction wait: {e}", exc_info=True)
+                user_choice = 'abort' # Abort on unexpected error
+
 
             # --- Process User Choice ---
-            # Now use override_selector which was set if final_clicked_selector was found
-            if user_choice == 'override' or override_selector:
-                print(f"Using override selector: {override_selector}")
+            if user_choice == 'override':
                 final_selector = override_selector
-                # Execute the original *intended* action on the *overridden* selector
+                performed_action = False
                 print(f"Executing original action '{action}' on overridden selector...")
                 exec_result = self._execute_action_for_recording(action, final_selector, parameters)
                 performed_action = exec_result["success"]
-                if not performed_action:
+
+                if performed_action:
+                    # --- Ask for Parameterization (for 'type' action) ---
+                    if action == "type":
+                        param_text = parameters.get("text", "")
+                        if self.browser_controller.prompt_parameterization_in_panel(param_text):
+                            print(f"Parameterize '{param_text[:30]}...'? Enter name in panel or leave blank...")
+                            param_choice = self.browser_controller.wait_for_panel_interaction(15.0) # Wait for param submit
+                            if param_choice == 'parameterized':
+                                parameter_name = self.browser_controller.get_parameterization_result()
+                                print(f"Parameter name set to: '{parameter_name}'" if parameter_name else "No parameter name entered.")
+                            else:
+                                print("Parameterization skipped or timed out.")
+                        else:
+                             print("Could not show parameterization UI.")
+
+                    # --- Record the override step ---
+                    record = { "step_id": self._current_step_id, "action": action, "description": planned_desc,
+                               "parameters": {}, "selector": final_selector, "wait_after_secs": DEFAULT_WAIT_AFTER_ACTION }
+                    if action == "type": record["parameters"]["text"] = parameters.get("text", "")
+                    if parameter_name: record["parameters"]["parameter_name"] = parameter_name
+                    self.recorded_steps.append(record)
+                    self._current_step_id += 1
+                    logger.info(f"Step {record['step_id']} recorded (User Override): {action} on {final_selector}")
+                    self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "done", result=f"Recorded override as step {record['step_id']}")
+                    action_recorded = True
+                else:
+                    # Override execution failed
                     print(f"WARNING: Execution failed using override selector: {exec_result['message']}")
-                    retry_choice = input("Execution failed. Skip (S) or Abort (A)? > ").strip().lower()
-                    if retry_choice == 'a':
-                        self._user_abort_recording = True
-                        return False # Abort
-                    else:
-                        print("Skipping step after failed override execution.")
-                        self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "skipped", result="Skipped after failed override execution")
-                        return True # Skip
+                    # Ask to skip or abort via panel again? Simpler to just skip here.
+                    print("Skipping step after failed override execution.")
+                    self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "skipped", result="Skipped after failed override execution")
 
 
-            elif user_choice == '' or user_choice == 'y':
+            elif user_choice == 'accept':
                 print("Accepting AI suggestion.")
                 final_selector = suggested_selector
-                # Execute action on AI's suggested selector
+                performed_action = False
                 exec_result = self._execute_action_for_recording(action, final_selector, parameters)
                 performed_action = exec_result["success"]
-                if not performed_action:
-                    print(f"WARNING: Execution failed using AI suggested selector: {exec_result['message']}")
-                    retry_choice = input("Execution failed. Retry suggestion (R), Skip (S) or Abort (A)? > ").strip().lower()
-                    if retry_choice == 'a':
-                        self._user_abort_recording = True
-                        return False # Abort
-                    elif retry_choice == 'r':
-                        print("Marking step for retry...")
-                        current_task_index = self.task_manager.current_subtask_index
-                        self.task_manager.update_subtask_status(current_task_index, "failed", error="User requested retry after execution failure.")
-                        # Important: Ensure no step is recorded when retrying
-                        return True # Signal to loop to retry planning/suggestion
-                    else:
-                        print("Skipping step after failed execution.")
-                        self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "skipped", result="Skipped after failed AI suggestion execution")
-                        return True # Skip
+
+                if performed_action:
+                    # --- Ask for Parameterization ---
+                    if action == "type":
+                        param_text = parameters.get("text", "")
+                        if self.browser_controller.prompt_parameterization_in_panel(param_text):
+                             print(f"Parameterize '{param_text[:30]}...'? Enter name in panel or leave blank...")
+                             param_choice = self.browser_controller.wait_for_panel_interaction(15.0)
+                             if param_choice == 'parameterized':
+                                 parameter_name = self.browser_controller.get_parameterization_result()
+                                 print(f"Parameter name set to: '{parameter_name}'" if parameter_name else "No parameter name entered.")
+                             else:
+                                 print("Parameterization skipped or timed out.")
+                        else:
+                             print("Could not show parameterization UI.")
+
+                    # --- Record the accepted AI suggestion ---
+                    record = { "step_id": self._current_step_id, "action": action, "description": planned_desc,
+                               "parameters": {}, "selector": final_selector, "wait_after_secs": DEFAULT_WAIT_AFTER_ACTION }
+                    if action == "type": record["parameters"]["text"] = parameters.get("text", "")
+                    if parameter_name: record["parameters"]["parameter_name"] = parameter_name
+                    self.recorded_steps.append(record)
+                    self._current_step_id += 1
+                    logger.info(f"Step {record['step_id']} recorded (AI Suggestion): {action} on {final_selector}")
+                    self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "done", result=f"Recorded AI suggestion as step {record['step_id']}")
+                    action_recorded = True
                 else:
-                    self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "done", result="Executed AI suggestion")
+                    # AI suggestion execution failed
+                    print(f"WARNING: Execution failed using AI suggested selector: {exec_result['message']}")
+                    # Ask to retry/skip/abort via panel again? Or mark as failed for main loop retry?
+                    # Let's mark as failed for retry by the main loop.
+                    print("Marking step for retry after execution failure...")
+                    self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "failed", error=f"Execution failed: {exec_result['message']}")
+                    # Action was NOT recorded in this case
 
-            elif user_choice == 's':
+            elif user_choice == 'skip':
                 print("Skipping planned step.")
-                # Mark task manager step as skipped? Or just don't record. Let's not record.
-                self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "skipped", result="User skipped")
-                performed_action = False # No action performed or recorded
-                return True # Continue to next planned step
+                self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "skipped", result="User skipped via panel")
 
-            elif user_choice == 'a':
+            elif user_choice == 'abort':
                 print("Aborting recording process.")
                 self._user_abort_recording = True
-                return False # Signal abort to main loop
+                 # No need to update task manager status if aborting globally
 
-            else:
-                print("Invalid choice. Skipping step.")
-                self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "skipped", result="Invalid user choice")
-                performed_action = False
-                return True # Continue to next planned step
+            else: # Should not happen with panel, but handle defensively (e.g., timeout resulted in None)
+                print("Invalid choice or timeout. Skipping step.")
+                self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "skipped", result="Invalid user choice or timeout")
 
-            # --- Record Step if Action Performed ---
-            if performed_action and final_selector:
-                record = {
-                    "step_id": self._current_step_id,
-                    "action": action,
-                    "description": planned_desc, # Use original planned description
-                    "parameters": {}, # Initialize empty params
-                    "selector": final_selector,
-                    "wait_after_secs": DEFAULT_WAIT_AFTER_ACTION # Add small default wait
-                }
-                if action == "type":
-                    record["parameters"]["text"] = parameters.get("text", "") # Get text from original params
-                    # Add parameterization hook (simple example)
-                    param_name_input = input(f"  Parameterize value '{parameters.get('text')}'? Enter name (e.g., username) or leave blank: ").strip()
-                    if param_name_input:
-                        record["parameters"]["parameter_name"] = param_name_input
+            # --- Cleanup UI after interaction ---
+            self.browser_controller.clear_highlights()
+            self.browser_controller.hide_recorder_panel()
+            self.browser_controller.remove_click_listener() # Ensure listener removed
 
-                self.recorded_steps.append(record)
-                self._current_step_id += 1
-                logger.info(f"Step {record['step_id']} recorded: {action} on {final_selector}")
-                return True # Success
-            elif final_selector: # Action wasn't performed (e.g., failed override) but we decided not to abort/skip
-                # This case should be handled by the return False or True for skip/abort above
-                logger.warning("Reached unexpected state where action wasn't performed but step wasn't skipped/aborted.")
-                return True # Treat as skipped
-            else: # No selector finalized (e.g., abort/skip)
-                return True # Already handled by returns above
+            return not self._user_abort_recording # Return True if handled (recorded/skipped/failed for retry), False only on ABORT
 
+    def _get_llm_assertion_target_index(self, planned_desc: str, dom_context_str: str) -> Tuple[Optional[int], Optional[str]]:
+        """Helper function to ask LLM for the target index for an assertion."""
 
     def _handle_assertion_recording(self, planned_step: Dict[str, Any]) -> bool:
         """
@@ -1674,188 +1533,343 @@ Respond ONLY with the JSON object matching the schema.
             return True # Skip
 
         planned_desc = planned_step["description"]
+        logger.info(f"Starting interactive assertion definition for: '{planned_desc}'")
         print("\n" + "="*60)
         print(f"Planned Step: {planned_desc}")
-        print("This is a verification step. Let's define the assertion.")
+        print("Define Assertion via UI Panel...")
         print("="*60)
 
-        # 1. Identify Target Element (Use LLM again, simplified prompt)
+        current_state = "target_selection" # States: target_selection, type_selection, param_input
+        suggested_selector = None
+        final_selector = None
+        assertion_action = None
+        assertion_params = {}
+        llm_target_suggestion_failed = False # Track if initial suggestion failed
+
+        try:
+            # 1. Identify Target Element (Use LLM again, simplified prompt)
         #    We need a selector for the element to assert against.
-        current_url = self.browser_controller.get_current_url()
-        dom_context_str = "Error getting DOM"
-        if self._latest_dom_state:
-            dom_context_str, _ = self._latest_dom_state.element_tree.generate_llm_context_string(context_purpose='verification')
+            current_url = self.browser_controller.get_current_url()
+            dom_context_str = "Error getting DOM"
+            if self._latest_dom_state:
+                dom_context_str, _ = self._latest_dom_state.element_tree.generate_llm_context_string(context_purpose='verification')
+            prompt = f"""
+            Given the verification step: "{planned_desc}"
+            And the current visible interactive elements context (with indices):
+            ```html
+            {dom_context_str}
+            ```
+            Identify the element index `[index]` most relevant to this verification task.
+            Respond ONLY with a JSON object matching the schema:
+            {{
+                "index": INDEX_NUMBER_OR_NULL,
+                "reasoning": "OPTIONAL_REASONING_IF_NULL"
+            }}
 
-        prompt = f"""
-        Given the verification step: "{planned_desc}"
-        And the current visible interactive elements context (with indices):
-        ```html
-        {dom_context_str}
-        ```
-        Identify the element index `[index]` most relevant to this verification task.
-        Respond ONLY with a JSON object matching the schema:
-        {{
-            "index": INDEX_NUMBER_OR_NULL,
-            "reasoning": "OPTIONAL_REASONING_IF_NULL"
-        }}
+            Example Output (Found): {{"index": 5}}
+            Example Output (Not Found): {{"index": null, "reasoning": "Cannot determine a single target element for 'verify presence of error'."}}
+            """
+            logger.debug(f"[LLM ASSERT PROMPT] Sending prompt for assertion target index:\n{prompt[:500]}...")
 
-        Example Output (Found): {{"index": 5}}
-        Example Output (Not Found): {{"index": null, "reasoning": "Cannot determine a single target element for 'verify presence of error'."}}
-        """
-        logger.debug(f"[LLM ASSERT PROMPT] Sending prompt for assertion target index:\n{prompt[:500]}...")
+            response_obj = self.llm_client.generate_json(AssertionTargetIndexSchema, prompt)
 
-        response_obj = self.llm_client.generate_json(AssertionTargetIndexSchema, prompt)
+            target_index = None
+            llm_reasoning = "LLM did not provide a target index or reasoning." # Default
 
-        target_index = None
-        llm_reasoning = "LLM did not provide a target index or reasoning." # Default
+            if isinstance(response_obj, AssertionTargetIndexSchema):
+                logger.debug(f"[LLM ASSERT RESPONSE] Parsed index response: {response_obj}")
+                target_index = response_obj.index # Will be None if null in JSON
+                if target_index is None and response_obj.reasoning:
+                    llm_reasoning = response_obj.reasoning
+                elif target_index is None:
+                    llm_reasoning = "LLM did not identify a target element (index is null)."
 
-        if isinstance(response_obj, AssertionTargetIndexSchema):
-             logger.debug(f"[LLM ASSERT RESPONSE] Parsed index response: {response_obj}")
-             target_index = response_obj.index # Will be None if null in JSON
-             if target_index is None and response_obj.reasoning:
-                  llm_reasoning = response_obj.reasoning
-             elif target_index is None:
-                   llm_reasoning = "LLM did not identify a target element (index is null)."
+            elif isinstance(response_obj, str): # Handle error string
+                logger.error(f"[LLM ASSERT RESPONSE] Failed to get target index JSON: {response_obj}")
+                llm_reasoning = f"LLM error getting target index: {response_obj}"
+            else: # Handle unexpected type
+                logger.error(f"[LLM ASSERT RESPONSE] Unexpected response type for target index: {type(response_obj)}")
+                llm_reasoning = f"Unexpected LLM response type: {type(response_obj)}"
 
-        elif isinstance(response_obj, str): # Handle error string
-             logger.error(f"[LLM ASSERT RESPONSE] Failed to get target index JSON: {response_obj}")
-             llm_reasoning = f"LLM error getting target index: {response_obj}"
-        else: # Handle unexpected type
-             logger.error(f"[LLM ASSERT RESPONSE] Unexpected response type for target index: {type(response_obj)}")
-             llm_reasoning = f"Unexpected LLM response type: {type(response_obj)}"
+            target_node = None
+            target_selector = None
 
-        target_node = None
-        target_selector = None
-
-        if target_index is not None: # Check explicitly for non-None integer
-            if self._latest_dom_state and self._latest_dom_state.selector_map:
-                 target_node = self._latest_dom_state.selector_map.get(target_index)
-                 if target_node and target_node.css_selector:
-                      target_selector = target_node.css_selector
-                      print(f"AI suggests asserting on element [Index: {target_index}]: <{target_node.tag_name}> with selector: `{target_selector}`")
-                      self.browser_controller.clear_highlights()
-                      self.browser_controller.highlight_element(target_selector, target_index, color="#0000FF", text="Assert Target?") # Blue for assert
+            if target_index is not None:
+                 if self._latest_dom_state and self._latest_dom_state.selector_map:
+                     target_node = self._latest_dom_state.selector_map.get(target_index)
+                     if target_node and target_node.css_selector:
+                          suggested_selector = target_node.css_selector
+                          print(f"AI suggests target [Index: {target_index}]: <{target_node.tag_name}>")
+                          print(f"  Selector: `{suggested_selector}`")
+                          self.browser_controller.clear_highlights()
+                          self.browser_controller.highlight_element(suggested_selector, target_index, color="#0000FF", text="Assert Target?")
+                     else:
+                          print(f"AI suggested index [{target_index}], but element/selector not found.")
+                          llm_target_suggestion_failed = True
                  else:
-                      print(f"AI suggested index [{target_index}], but element or selector not found in current context.")
-                      target_index = None # Reset index as it's unusable
+                      print(f"AI suggested index [{target_index}], but DOM map unavailable.")
+                      llm_target_suggestion_failed = True
             else:
-                 print(f"AI suggested index [{target_index}], but DOM context is unavailable.")
-                 target_index = None # Reset index
-        # else: target_index is None, use llm_reasoning below
+                print(f"AI could not suggest a target element. Reason: {llm_reasoning}")
+                llm_target_suggestion_failed = True # Mark as failed if no index
+        except Exception as e:
+             logger.error(f"Error getting initial assertion target suggestion: {e}", exc_info=True)
+             print(f"Error getting AI suggestion: {e}")
+             llm_target_suggestion_failed = True
 
-        if target_index is None: # If index is still None after checks or initially null
-            print(f"AI could not confidently identify a target element for '{planned_desc}'. Reason: {llm_reasoning}")
+
 
 
         # --- User confirms/overrides target selector ---
-        override_prompt = "Enter a different selector if needed, or press Enter to use suggested/skip, or A to abort: > "
-        user_input_selector = input(override_prompt).strip()
+        while True:
+            user_choice = None
+            override_selector = None
 
-        if user_input_selector.lower() == 'a':
-             self._user_abort_recording = True
-             return False
-        elif user_input_selector == '' and target_selector:
-             final_selector = target_selector
-             print(f"Using suggested selector: {final_selector}")
-        elif user_input_selector != '':
-             final_selector = user_input_selector
-             print(f"Using user-provided selector: {final_selector}")
-             # Optionally try to highlight the user's selector
-             try:
-                  self.browser_controller.clear_highlights()
-                  self.browser_controller.highlight_element(final_selector, 0, color="#00FF00", text="User Target") # Green for user choice
-             except Exception as e:
-                  print(f"Warning: Could not highlight user selector '{final_selector}': {e}")
-        else: # User hit Enter without suggestion or providing one
-            print("No target selector specified. Skipping assertion.")
-            self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "skipped", result="User skipped assertion target")
-            return True # Skip
+            # --- State 1: Target Selection ---
+            if current_state == "target_selection":
+                print("Panel State: Confirm or Override Target Selector.")
+                self.browser_controller.show_assertion_target_panel(planned_desc, suggested_selector)
+                listener_setup = self.browser_controller.setup_click_listener()
+                if not listener_setup:
+                    logger.error("Failed to set up click listener for override.")
+                    user_choice = 'abort' # Force abort if listener fails
+                else:
+                    # Wait for click override OR panel interaction
+                    try:
+                         logger.debug("Waiting for user click override (Assertion Target)...")
+                         override_selector = self.browser_controller.wait_for_user_click_or_timeout(5.0) # 5s for click override
+                         if override_selector:
+                             print(f"\n[Recorder] User override target detected! Using selector: {override_selector}")
+                             user_choice = 'override_target_confirmed' # Internal choice after click
+                         else:
+                             logger.debug("No click override. Waiting for panel interaction (Assertion Target)...")
+                             user_choice = self.browser_controller.wait_for_panel_interaction(15.0) # Wait longer for panel
+                             if not user_choice: user_choice = 'skip' # Default to skip on panel timeout
+                    except Exception as e:
+                        logger.error(f"Error during assertion target interaction wait: {e}", exc_info=True)
+                        user_choice = 'abort'
+
+                # --- Process Target Choice ---
+                self.browser_controller.remove_click_listener() # Remove listener after this stage
+
+                if user_choice == 'confirm_target':
+                    if suggested_selector:
+                        final_selector = suggested_selector
+                        print(f"Using suggested target: {final_selector}")
+                        current_state = "type_selection" # Move to next state
+                        continue # Restart loop in new state
+                    else:
+                         print("Error: Cannot confirm target, no suggestion was available.")
+                         # Stay in this state or treat as skip? Let's allow retry.
+                         current_state = "target_selection"
+                         continue
+
+                elif user_choice == 'override_target_confirmed': # Came from click override
+                    if override_selector:
+                        final_selector = override_selector
+                        print(f"Using override target: {final_selector}")
+                        # Try highlighting the user's choice
+                        try:
+                            self.browser_controller.clear_highlights()
+                            self.browser_controller.highlight_element(final_selector, 0, color="#00FF00", text="User Target")
+                        except Exception as e:
+                            print(f"Warning: Could not highlight user selector '{final_selector}': {e}")
+                        current_state = "type_selection" # Move to next state
+                        continue # Restart loop in new state
+                    else:
+                        print("Error: Override click detected but no selector captured.")
+                        current_state = "target_selection" # Stay here
+                        continue
+
+                elif user_choice == 'override_target': # Clicked button in panel to enable clicking
+                    print("Click the element on the page you want to assert against...")
+                    self.browser_controller.hide_recorder_panel() # Hide panel while clicking
+                    listener_setup = self.browser_controller.setup_click_listener()
+                    if not listener_setup:
+                        logger.error("Failed to set up click listener for override.")
+                        user_choice = 'abort'
+                    else:
+                         try:
+                              override_selector = self.browser_controller.wait_for_user_click_or_timeout(20.0) # Longer wait for manual click
+                              if override_selector:
+                                   print(f"\n[Recorder] User override target selected: {override_selector}")
+                                   user_choice = 'override_target_confirmed' # Set internal choice
+                              else:
+                                   print("Timeout waiting for override click. Please try again.")
+                                   user_choice = None # Force loop restart in target_selection
+                         except Exception as e:
+                              logger.error(f"Error during manual override click wait: {e}", exc_info=True)
+                              user_choice = 'abort'
+                    self.browser_controller.remove_click_listener() # Remove listener
+
+                    if user_choice == 'override_target_confirmed':
+                         final_selector = override_selector
+                         try:
+                             self.browser_controller.clear_highlights()
+                             self.browser_controller.highlight_element(final_selector, 0, color="#00FF00", text="User Target")
+                         except Exception as e: print(f"Warning: Could not highlight user selector: {e}")
+                         current_state = "type_selection"
+                         continue
+                    elif user_choice == 'abort':
+                         self._user_abort_recording = True; break # Exit loop
+                    else: # Timeout or error during manual click
+                         current_state = "target_selection" # Go back to target panel
+                         continue
+
+                elif user_choice == 'skip':
+                     print("Skipping assertion definition.")
+                     self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "skipped", result="User skipped assertion")
+                     break # Exit loop, return True
+                elif user_choice == 'abort':
+                     self._user_abort_recording = True; break # Exit loop, return False
+                else: # Includes timeout, None, unexpected values
+                     print("Invalid choice or timeout. Please select target action.")
+                     current_state = "target_selection" # Stay here
+                     continue
+
+            # --- State 2: Type Selection ---
+            elif current_state == "type_selection":
+                if not final_selector: # Should not happen if logic is correct
+                    logger.error("Assertion state error: Reached type selection without a final selector.")
+                    current_state = "target_selection"; continue # Go back
+
+                print("Panel State: Select Assertion Type.")
+                self.browser_controller.show_assertion_type_panel(final_selector)
+                user_choice = self.browser_controller.wait_for_panel_interaction(20.0) # Wait for type selection
+                if not user_choice: user_choice = 'skip' # Default to skip on timeout
+
+                # --- Process Type Choice ---
+                if user_choice.startswith('select_type_'):
+                    type_suffix = user_choice.split('select_type_')[-1]
+                    # Map suffix to actual action string
+                    action_map = {
+                        'text_contains': "assert_text_contains", 'text_equals': "assert_text_equals",
+                        'visible': "assert_visible", 'hidden': "assert_hidden",
+                        'attribute_equals': "assert_attribute_equals", 'element_count': "assert_element_count",
+                        'checked': "assert_checked", 'not_checked': "assert_not_checked"
+                    }
+                    assertion_action = action_map.get(type_suffix)
+                    if not assertion_action:
+                        print(f"Error: Unknown assertion type selected '{type_suffix}'.")
+                        current_state = "type_selection"; continue # Ask again
+
+                    print(f"Assertion type selected: {assertion_action}")
+                    # Check if parameters are needed
+                    needs_params_map = {
+                        "assert_text_contains": ["Expected Text"], "assert_text_equals": ["Expected Text"],
+                        "assert_attribute_equals": ["Attribute Name", "Expected Value"],
+                        "assert_element_count": ["Expected Count"]
+                    }
+                    if assertion_action in needs_params_map:
+                        current_state = "param_input" # Move to param state
+                        continue # Restart loop in new state
+                    else:
+                        assertion_params = {} # No params needed
+                        # Proceed directly to recording
+                        break # Exit loop to record
+
+                elif user_choice == 'back_to_target':
+                     current_state = "target_selection"; continue # Go back
+                elif user_choice == 'skip':
+                     print("Skipping assertion definition.")
+                     self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "skipped", result="User skipped assertion")
+                     break # Exit loop, return True
+                elif user_choice == 'abort':
+                     self._user_abort_recording = True; break # Exit loop, return False
+                else: # Includes timeout, None, unexpected values
+                     print("Invalid choice or timeout. Please select assertion type.")
+                     current_state = "type_selection"; continue # Stay here
+
+            # --- State 3: Parameter Input ---
+            elif current_state == "param_input":
+                if not final_selector or not assertion_action: # Should not happen
+                    logger.error("Assertion state error: Reached param input without selector or action.")
+                    current_state = "target_selection"; continue # Go way back
+
+                print("Panel State: Enter Assertion Parameters.")
+                needs_params_map = { # Redefine here for clarity
+                    "assert_text_contains": ["Expected Text"], "assert_text_equals": ["Expected Text"],
+                    "assert_attribute_equals": ["Attribute Name", "Expected Value"],
+                    "assert_element_count": ["Expected Count"]
+                }
+                param_labels = needs_params_map.get(assertion_action, [])
+                self.browser_controller.show_assertion_params_panel(final_selector, assertion_action, param_labels)
+                user_choice = self.browser_controller.wait_for_panel_interaction(60.0) # Longer timeout for typing
+                if not user_choice: user_choice = 'skip' # Default to skip on timeout
+
+                # --- Process Param Choice ---
+                if user_choice == 'submit_params':
+                    raw_params = self.browser_controller.get_assertion_parameters_from_panel(len(param_labels))
+                    if raw_params is None:
+                         print("Error retrieving parameters from panel. Please try again.")
+                         current_state = "param_input"; continue # Stay here
+
+                    # Map raw_params (param1, param2) to specific keys
+                    assertion_params = {}
+                    try:
+                        if assertion_action == "assert_text_contains" or assertion_action == "assert_text_equals":
+                            assertion_params["expected_text"] = raw_params.get("param1", "")
+                        elif assertion_action == "assert_attribute_equals":
+                            assertion_params["attribute_name"] = raw_params.get("param1", "")
+                            assertion_params["expected_value"] = raw_params.get("param2", "")
+                            if not assertion_params["attribute_name"]: raise ValueError("Attribute name cannot be empty.")
+                        elif assertion_action == "assert_element_count":
+                            count_str = raw_params.get("param1", "")
+                            if not count_str.isdigit(): raise ValueError("Expected count must be a number.")
+                            assertion_params["expected_count"] = int(count_str)
+                        print(f"Parameters submitted: {assertion_params}")
+                        break # Exit loop to record
+                    except ValueError as ve:
+                         print(f"Input Error: {ve}. Please correct parameters.")
+                         current_state = "param_input"; continue # Stay here to retry
+
+                elif user_choice == 'back_to_type':
+                     current_state = "type_selection"; continue # Go back
+                elif user_choice == 'abort':
+                     self._user_abort_recording = True; break # Exit loop, return False
+                else: # Includes skip, timeout, None, unexpected values
+                     print("Skipping assertion definition.")
+                     self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "skipped", result="User skipped assertion parameters")
+                     break # Exit loop, return True
+
+            else: # Should not happen
+                 logger.error(f"Assertion state error: Unknown state '{current_state}'. Aborting assertion.")
+                 self._user_abort_recording = True; break # Exit loop, return False
 
 
-        # --- User Selects Assertion Type ---
-        print("\nChoose Assertion Type:")
-        print("  [1] Text Contains")
-        print("  [2] Text Equals")
-        print("  [3] Is Visible")
-        print("  [4] Is Hidden (Not Visible)")
-        print("  [5] Attribute Equals")
-        print("  [6] Element Count Equals")
-        print("  [7] Is Checked (Checkbox/Radio)")
-        print("  [8] Is Not Checked (Checkbox/Radio)")
-        print("  [S] Skip Assertion")
-        print("  [A] Abort Recording")
-        assert_choice = input("Enter choice: > ").strip().lower()
+        # --- End of State Machine Loop ---
+        self.browser_controller.hide_recorder_panel() # Ensure panel is hidden
 
-        assertion_action = None
-        assertion_params = {}
+        # --- Record Step if not Aborted/Skipped ---
+        if not self._user_abort_recording and assertion_action and final_selector:
+             # Check if loop exited normally for recording vs. skipping
+             task_status = self.task_manager.subtasks[self.task_manager.current_subtask_index]['status']
+             if task_status != "skipped": # Only record if not explicitly skipped
+                 record = {
+                     "step_id": self._current_step_id,
+                     "action": assertion_action,
+                     "description": planned_desc, # Use original planned description
+                     "parameters": assertion_params,
+                     "selector": final_selector,
+                     "wait_after_secs": 0 # Assertions usually don't need waits after
+                 }
+                 self.recorded_steps.append(record)
+                 self._current_step_id += 1
+                 logger.info(f"Step {record['step_id']} recorded: {assertion_action} on {final_selector}")
+                 self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "done", result=f"Recorded as assertion step {record['step_id']}")
+                 return True
+             else:
+                 logger.info("Assertion definition skipped by user.")
+                 return True # Skipped successfully
 
-        if assert_choice == '1':
-            assertion_action = "assert_text_contains"
-            expected_text = input("Enter expected text to contain: ").strip()
-            assertion_params["expected_text"] = expected_text
-        elif assert_choice == '2':
-            assertion_action = "assert_text_equals"
-            expected_text = input("Enter exact expected text: ").strip()
-            assertion_params["expected_text"] = expected_text
-        elif assert_choice == '3':
-            assertion_action = "assert_visible"
-        elif assert_choice == '4':
-            assertion_action = "assert_hidden"
-        elif assert_choice == '5':
-            assertion_action = "assert_attribute_equals"
-            attr_name = input("Enter attribute name (e.g., 'class', 'disabled'): ").strip()
-            expected_value = input(f"Enter expected value for attribute '{attr_name}': ").strip()
-            assertion_params["attribute_name"] = attr_name
-            assertion_params["expected_value"] = expected_value
-        elif assert_choice == '6':
-             assertion_action = "assert_element_count"
-             expected_count = input("Enter expected element count: ").strip()
-             try:
-                 assertion_params["expected_count"] = int(expected_count)
-             except ValueError:
-                 print("Invalid count. Skipping assertion.")
-                 self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "skipped", result="Invalid assertion count")
-                 return True # Skip
-        elif assert_choice == '7':
-            assertion_action = "assert_checked"
-            # No parameters needed
-        elif assert_choice == '8':
-            assertion_action = "assert_not_checked"
-            # No parameters needed
-        elif assert_choice == 's':
-            print("Skipping assertion.")
-            self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "skipped", result="User skipped assertion")
-            return True # Skip
-        elif assert_choice == 'a':
-            print("Aborting recording.")
-            self._user_abort_recording = True
-            return False # Abort
+        elif self._user_abort_recording:
+             logger.warning("Assertion definition aborted by user.")
+             return False # Aborted
         else:
-            print("Invalid assertion choice. Skipping assertion.")
-            self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "skipped", result="Invalid assertion choice")
-            return True # Skip
-
-        # --- Record the Assertion Step ---
-        if assertion_action and final_selector:
-            record = {
-                "step_id": self._current_step_id,
-                "action": assertion_action,
-                "description": planned_desc, # Use original planned description
-                "parameters": assertion_params,
-                "selector": final_selector,
-                "wait_after_secs": 0 # Assertions usually don't need waits after
-            }
-            self.recorded_steps.append(record)
-            self._current_step_id += 1
-            logger.info(f"Step {record['step_id']} recorded: {assertion_action} on {final_selector}")
-             # Mark original planned step as done in task manager
-            self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "done", result=f"Recorded as assertion step {record['step_id']}")
-            return True
-        else:
-            # Should have been handled by skip/abort logic above
-            logger.warning("Reached end of assertion handling without recording, skipping.")
-            self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "skipped", result="Assertion not fully defined")
-            return True # Skip
+             # Loop exited without recording (likely due to skip choice)
+             logger.info("Assertion definition finished without recording (likely skipped).")
+             # Task status should already be 'skipped' from within the loop
+             return True
 
 
     def record(self, feature_description: str) -> Dict[str, Any]:
@@ -1964,7 +1978,8 @@ Respond ONLY with the JSON object matching the schema.
                 screenshot_bytes = None # Initialize screenshot bytes
                 self._latest_dom_state = None
                 self.browser_controller.clear_highlights() # Clear previous highlights
-
+                self.browser_controller.hide_recorder_panel()
+                
                 try:
                     current_url = self.browser_controller.get_current_url()
                     # Always try to get DOM state
@@ -2241,6 +2256,7 @@ Respond ONLY with the JSON object matching the schema.
             if hasattr(self, 'browser_controller') and self.browser_controller:
                  self.browser_controller.clear_highlights()
                  self.browser_controller.remove_click_listener() # Attempt removal
+                 self.browser_controller.remove_recorder_panel()
                  self.browser_controller.close()
 
             end_time = time.time()

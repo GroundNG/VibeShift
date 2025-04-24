@@ -5,4 +5,4 @@ __pycache__/
 /output
 ignore-*
 .DS_Store
-
+doc

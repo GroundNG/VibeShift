@@ -29,12 +29,25 @@ class TestExecutor:
             raise PlaywrightError("Page is not initialized.")
         if not selector:
             raise ValueError("Selector cannot be empty.")
+        
+        is_likely_xpath = selector.startswith(('/', '(', '//')) or \
+                          ('/' in selector and not any(c in selector for c in ['#', '.', '[', '>', '+', '~']))
+
+        # If it looks like XPath but doesn't have a prefix, add 'css='
+        # Playwright's locator treats "css=<xpath>" as an XPath selector.
+        processed_selector = selector
+        if is_likely_xpath and not selector.startswith(('css=', 'xpath=')):
+            logger.warning(f"Selector '{selector}' looks like XPath but lacks prefix. Assuming XPath and adding 'css=' prefix.")
+            processed_selector = f"xpath={selector}"
+        
         try:
-            return self.page.locator(selector).first
+            logger.debug(f"Attempting to locate using: '{processed_selector}'")
+            return self.page.locator(processed_selector).first
         except Exception as e:
             # Catch errors during locator creation itself (e.g., invalid selector syntax)
-            logger.error(f"Failed to create locator for selector: '{selector}'. Error: {e}")
-            raise PlaywrightError(f"Invalid selector syntax or error creating locator: '{selector}'. Error: {e}") from e
+            logger.error(f"Failed to create locator for processed selector: '{processed_selector}'. Original: '{selector}'. Error: {e}")
+            # Re-raise using the processed selector in the message for clarity
+            raise PlaywrightError(f"Invalid selector syntax or error creating locator: '{processed_selector}'. Error: {e}") from e
 
     def run_test(self, json_file_path: str) -> Dict[str, Any]:
         """Loads and executes the test steps from the JSON file."""
