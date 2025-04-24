@@ -1,3 +1,5 @@
+
+```json
 // output/test_case_example.json
 {
   "test_name": "Login Functionality Test",
@@ -75,3 +77,4 @@
     // ... more steps
   ]
 }
+```
