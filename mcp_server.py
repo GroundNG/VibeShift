@@ -5,6 +5,7 @@ import json
 import logging
 from typing import List, Dict, Any, Optional
 import asyncio
+import re
 
 # Ensure agent modules are importable (adjust path if necessary)
 # Assuming mcp_server.py is at the root level alongside agent.py etc.
@@ -45,13 +46,14 @@ def get_api_key() -> str:
 
 # --- MCP Tool: Record a New Test Flow (Automated - Requires Agent Refactoring) ---
 @mcp.tool()
-async def record_test_flow(feature_description: str, headless: bool = True) -> Dict[str, Any]:
+async def record_test_flow(feature_description: str, project_directory: str, headless: bool = True) -> Dict[str, Any]:
     """
     Attempts to automatically record a web test flow based on a natural language description. If a case fails, there might be a possibility that you missed/told wrong step in feature description. 
     Uses the WebAgent in automated mode (bypasses interactive prompts). Do not skip telling any step. Give complete end to end steps what to do and what to verify
 
     Args:
         feature_description: A natural language description of the test case or user flow. Crucially, this description MUST explicitly include the starting URL of the website to be tested (e.g., 'Go to https://example.com, then click...').
+        project_directory: The project directory you are currently working in. This is used to identify the test flows of a project
         headless: Run the underlying browser in headless mode. Defaults to True.
 
     Returns:
@@ -62,7 +64,7 @@ async def record_test_flow(feature_description: str, headless: bool = True) -> D
     try:
         # 1. Initialize required components
         api_key = get_api_key()
-        llm_client = LLMClient(api_key=api_key)
+        llm_client = LLMClient(gemini_api_key=api_key, provider='gemini')
 
         # 2. Instantiate WebAgent in AUTOMATED mode
         recorder_agent = WebAgent(
@@ -70,7 +72,8 @@ async def record_test_flow(feature_description: str, headless: bool = True) -> D
             headless=headless, # Allow MCP tool to specify headless
             is_recorder_mode=True,
             automated_mode=True, # <<< Set automated mode 
-            max_retries_per_subtask=2 
+            max_retries_per_subtask=2,
+            filename=re.sub(r"[ /]", "_", project_directory)
         )
         
         # Run the blocking recorder_agent.record method in a separate thread
@@ -165,7 +168,7 @@ async def discover_test_flows(start_url: str, max_pages_to_crawl: int = 10, head
     try:
         # 1. Initialize required components
         api_key = get_api_key()
-        llm_client = LLMClient(api_key=api_key)
+        llm_client = LLMClient(gemini_api_key=api_key, provider='gemini')
 
         # 2. Instantiate CrawlerAgent
         crawler = CrawlerAgent(
@@ -193,11 +196,12 @@ async def discover_test_flows(start_url: str, max_pages_to_crawl: int = 10, head
 
 # --- MCP Resource: List Recorded Tests ---
 @mcp.tool()
-def list_recorded_tests() -> List[str]:
+def list_recorded_tests(project_directory: str) -> List[str]:
     """
     Provides a list of available test JSON files in the standard output directory.
 
     Args:
+    project_directory: The project directory you are currently working in. This is used to identify the test flows of a project
     
     Returns:
         test_files: A list of filenames for each test flow (e.g., ["test_login_flow_....json", "test_search_....json"]).
@@ -210,7 +214,7 @@ def list_recorded_tests() -> List[str]:
     try:
         test_files = [
             f for f in os.listdir(TEST_OUTPUT_DIR)
-            if os.path.isfile(os.path.join(TEST_OUTPUT_DIR, f)) and f.endswith(".json") and f.startswith(("test_", "simulated_test_", "execution_result_"))
+            if os.path.isfile(os.path.join(TEST_OUTPUT_DIR, f)) and f.endswith(".json") and f.startswith(re.sub(r"[ /]", "_", project_directory)) 
         ]
         # Optionally return just the test files, excluding execution results
         test_files = [f for f in test_files if not f.startswith("execution_result_")]

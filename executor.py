@@ -190,6 +190,15 @@ class TestExecutor:
                          locator = self._get_locator(selector)
                          # Use .not modifier with the checked assertion
                          expect(locator).not_to_be_checked(timeout=self.default_timeout)
+                    elif action == "assert_disabled":
+                         if not selector: raise ValueError("Missing 'selector' for assert_disabled.")
+                         locator = self._get_locator(selector)
+                         # Use Playwright's dedicated assertion for disabled state
+                         expect(locator).to_be_disabled(timeout=self.default_timeout)
+                    elif action == "assert_enabled":
+                         if not selector: raise ValueError("Missing 'selector' for assert_enabled.")
+                         locator = self._get_locator(selector)
+                         expect(locator).not_to_be_enabled(timeout=self.default_timeout)
                     # --- Add more actions/assertions as needed ---
                     else:
                         logger.warning(f"Unsupported action type '{action}' found in step {step_id}. Skipping.")

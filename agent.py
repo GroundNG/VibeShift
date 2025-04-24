@@ -48,6 +48,8 @@ class LLMVerificationSchema(BaseModel):
         'assert_attribute_equals',
         'assert_element_count',
         'assert_checked',        
+        'assert_enabled',
+        'assert_disabled',
         'assert_not_checked'   
     ]] = Field(None, description="Required if verified=true. Type of assertion suggested, reflecting the *actual observed state*.")
     element_index: Optional[int] = Field(None, description="Index of the *interactive* element [index] from context that might *also* relate to the verification (e.g., the button just clicked), if applicable. Set to null if verification relies solely on a static element or non-indexed element.")
@@ -94,7 +96,8 @@ class WebAgent:
                  max_retries_per_subtask: int = 1, # Retries for *AI suggestion* or failed *execution* during recording
                  max_extracted_data_history: int = 7, # Less relevant for recorder? Keep for now.
                  is_recorder_mode: bool = False,
-                 automated_mode: bool = False): 
+                 automated_mode: bool = False,
+                 filename: str = ""): 
 
         self.llm_client = llm_client
         self.is_recorder_mode = is_recorder_mode
@@ -117,6 +120,7 @@ class WebAgent:
         self.max_history_length = max_history_length
         self.max_extracted_data_history = max_extracted_data_history
         self.output_file_path: Optional[str] = None # Path for the recorded JSON
+        self.file_name = filename
         self.feature_description: Optional[str] = None
         self._latest_dom_state: Optional[DOMState] = None
         self._consecutive_suggestion_failures = 0 # Track failures for the *same* step index
@@ -375,9 +379,10 @@ This section shows visible elements on the page.
             *   Use `assert_checked` if the intent is to verify a checkbox or radio button **is currently selected/checked**.
             *   Use `assert_not_checked` if the intent is to verify it **is NOT selected/checked**.
             *   Use `assert_visible` / `assert_hidden` for visibility states.
+            *   Use `assert_disabled` / `assert_enabled` for checking disabled states
             *   Use `assert_attribute_equals` ONLY for comparing the *string value* of an attribute (e.g., `class="active"`, `value="Completed"`). **DO NOT use it for boolean attributes like `checked`, `disabled`, `selected`. Use state assertions instead.**
             *   Use `assert_element_count` for counting elements matching a selector.
-        *   **`parameters` (Optional):** Provide necessary parameters ONLY if the chosen `assertion_type` requires them (e.g., `assert_text_equals` needs `expected_text`). For `assert_checked`, `assert_not_checked`, `assert_visible`, `assert_hidden`, parameters should generally be empty (`{{}}`) or omitted. Ensure parameters reflect the *actual observed state* (e.g., observed text).
+        *   **`parameters` (Optional):** Provide necessary parameters ONLY if the chosen `assertion_type` requires them (e.g., `assert_text_equals` needs `expected_text`). For `assert_checked`, `assert_not_checked`, `assert_visible`, `assert_hidden`, `assert_disabled`, `assert_enabled`, parameters should generally be empty (`{{}}`) or omitted. Ensure parameters reflect the *actual observed state* (e.g., observed text).
     *   **If `verified` is FALSE:**
         *   `assertion_type`, `element_index`, `verification_selector`, `parameters` should typically be null/omitted.
 
@@ -480,7 +485,7 @@ Now, generate the verification JSON for: "{verification_description}"
             assertion_type = verification_dict.get("assertion_type")
             params = verification_dict.get("parameters", {})
             needs_params = assertion_type in ['assert_text_equals', 'assert_text_contains', 'assert_attribute_equals', 'assert_element_count']
-            no_params_needed = assertion_type in ['assert_checked', 'assert_not_checked', 'assert_visible', 'assert_hidden']
+            no_params_needed = assertion_type in ['assert_checked', 'assert_not_checked', 'assert_disabled', 'assert_enabled', 'assert_visible', 'assert_hidden']
 
 
 
@@ -573,7 +578,7 @@ Now, generate the verification JSON for: "{verification_description}"
                     assertion_type = verification_dict.get("assertion_type")
                     params = verification_dict.get("parameters", {})
                     needs_params = assertion_type in ['assert_text_equals', 'assert_text_contains', 'assert_attribute_equals', 'assert_element_count']
-                    no_params_needed = assertion_type in ['assert_checked', 'assert_not_checked', 'assert_visible', 'assert_hidden']
+                    no_params_needed = assertion_type in ['assert_checked', 'assert_not_checked', 'assert_enabled', 'assert_disabled', 'assert_visible', 'assert_hidden']
 
                     if not verification_dict.get("verification_selector"):
                         logger.error("Internal Error: Verification marked passed but final selector is missing!")
@@ -1747,7 +1752,7 @@ Respond ONLY with the JSON object matching the schema.
                         'text_contains': "assert_text_contains", 'text_equals': "assert_text_equals",
                         'visible': "assert_visible", 'hidden': "assert_hidden",
                         'attribute_equals': "assert_attribute_equals", 'element_count': "assert_element_count",
-                        'checked': "assert_checked", 'not_checked': "assert_not_checked"
+                        'checked': "assert_checked", 'not_checked': "assert_not_checked", "disabled": "assert_disabled", "enabled": "assert_enabled"
                     }
                     assertion_action = action_map.get(type_suffix)
                     if not assertion_action:
@@ -2214,11 +2219,14 @@ Respond ONLY with the JSON object matching the schema.
                     }
                     ts = time.strftime("%Y%m%d_%H%M%S")
                     safe_feature_name = re.sub(r'[^\w\-]+', '_', feature_description)[:50]
-                    filename = f"test_{safe_feature_name}_{ts}.json"
+                    if self.file_name is None:
+                       self.file_name = f"test_{safe_feature_name}_{ts}.json"
+                    else:
+                        self.file_name = self.file_name+f"{safe_feature_name}_{ts}_test.json"
                     output_dir = "output"
                     if not os.path.exists(output_dir):
                         os.makedirs(output_dir)
-                    self.output_file_path = os.path.join(output_dir, filename)
+                    self.output_file_path = os.path.join(output_dir, self.file_name)
 
                     with open(self.output_file_path, 'w', encoding='utf-8') as f:
                         json.dump(output_data, f, indent=2, ensure_ascii=False)
