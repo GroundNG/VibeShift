@@ -1515,7 +1515,8 @@ Respond ONLY with the JSON object matching the schema.
             # --- Cleanup UI after interaction ---
             self.browser_controller.clear_highlights()
             self.browser_controller.hide_recorder_panel()
-            self.browser_controller.remove_click_listener() # Ensure listener removed
+            if listener_setup:
+                self.browser_controller.remove_click_listener() # Ensure listener removed
 
             return not self._user_abort_recording # Return True if handled (recorded/skipped/failed for retry), False only on ABORT
 

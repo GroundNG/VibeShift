@@ -53,6 +53,11 @@ if __name__ == "__main__":
         default=10,
         help="Maximum number of pages to crawl in 'discover' mode (default: 10)."
     )
+    parser.add_argument(
+        '--automated',
+        action='store_true', # Use action='store_true' for boolean flags
+        help="Run recorder in automated mode (AI makes decisions without user prompts). Only applies to 'record' mode." # Clarified help text
+    )
     args = parser.parse_args()
 
     # Validate arguments based on mode
@@ -105,7 +110,10 @@ if __name__ == "__main__":
 
 
             # --- Initialize Components ---
-            llm_client = LLMClient(api_key=api_key)
+            llm_client = LLMClient(gemini_api_key=api_key, provider='gemini')
+            automated = False
+            if args.automated == True:
+                automated = True
             recorder_agent = WebAgent(
                 llm_client=llm_client,
                 headless=HEADLESS_BROWSER, # Must be False
@@ -113,7 +121,7 @@ if __name__ == "__main__":
                 max_history_length=MAX_HISTORY_FOR_LLM,
                 max_retries_per_subtask=MAX_STEP_RETRIES,
                 is_recorder_mode=True, # Add a flag to agent
-                # automated_mode=True
+                automated_mode=automated
             )
 
             # --- Get Feature Description ---
