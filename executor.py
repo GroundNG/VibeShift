@@ -16,7 +16,7 @@ class TestExecutor:
     Executes a recorded test case from a JSON file deterministically using Playwright.
     """
 
-    def __init__(self, headless: bool = True, default_timeout: int = 15000): # Default timeout for actions/assertions
+    def __init__(self, headless: bool = True, default_timeout: int = 5000): # Default timeout for actions/assertions
         self.headless = headless
         self.default_timeout = default_timeout # Milliseconds
         self.browser_controller: Optional[BrowserController] = None

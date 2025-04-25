@@ -502,8 +502,8 @@ class BrowserController:
         self.context: Optional[Any] = None # Keep context reference
         self.page: Page | None = None
         self.headless = headless
-        self.default_navigation_timeout = 90000
-        self.default_action_timeout = 20000
+        self.default_navigation_timeout = 9000
+        self.default_action_timeout = 9000
         self._dom_service: Optional[DomService] = None
         self.console_messages: List[Dict[str, Any]] = [] # <-- Add list to store messages
         self._recorder_ui_injected = False # Track if UI script is injected

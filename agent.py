@@ -953,6 +953,7 @@ Respond ONLY with the JSON object matching the schema.
 
             if abort_choice == 'a':
                  self._user_abort_recording = True # Mark for abort
+                 self._abort_reason = abort_reasoning
                  self.task_manager.update_subtask_status(current_planned_task['index'], "failed", error=f"Aborted based on AI re-planning suggestion: {abort_reasoning}", force_update=True)
                  return False # Abort
             else: # Skipped (Interactive only)
@@ -1933,7 +1934,7 @@ Respond ONLY with the JSON object matching the schema.
                 current_planned_task = self.task_manager.get_next_subtask()
 
                 if self._user_abort_recording: # Abort check
-                    recording_status["message"] = f"Recording aborted by {'user' if not self.automated_mode else 'automation logic'}."
+                    recording_status["message"] = f"Recording aborted by {'user' if not self.automated_mode else 'AI'} because {self._abort_reason if self.automated_mode else 'User had some chores to do'}."
                     logger.warning(recording_status["message"])
                     break
 
