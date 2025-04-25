@@ -136,6 +136,30 @@ class TestExecutor:
                          if not selector: raise ValueError("Missing 'selector' for uncheck action.")
                          # Use the browser_controller method
                          self.browser_controller.uncheck(selector)
+                    elif action == "select":
+                        option_label = params.get("option_label")
+                        option_value = params.get("option_value") # Support value too if recorded
+                        option_index_str = params.get("option_index") # Support index if recorded
+                        option_param = None
+                        param_type = None
+
+                        if option_label is not None:
+                            option_param = {"label": option_label}
+                            param_type = f"label '{option_label}'"
+                        elif option_value is not None:
+                            option_param = {"value": option_value}
+                            param_type = f"value '{option_value}'"
+                        elif option_index_str is not None and option_index_str.isdigit():
+                            option_param = {"index": int(option_index_str)}
+                            param_type = f"index {option_index_str}"
+                        else:
+                            raise ValueError("Missing 'option_label', 'option_value', or 'option_index' parameter for select action.")
+
+                        if not selector: raise ValueError("Missing 'selector' for select action.")
+
+                        logger.info(f"Selecting option by {param_type} in element: {selector}")
+                        locator = self._get_locator(selector)
+                        locator.select_option(**option_param, timeout=self.default_timeout)
                     elif action == "wait_for_load_state":
                          state = params.get("state", "load")
                          self.page.wait_for_load_state(state, timeout=self.browser_controller.default_navigation_timeout) # Use navigation timeout

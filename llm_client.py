@@ -59,7 +59,7 @@ class LLMClient:
 
      # Rate limiting parameters (adjust based on the specific API limits)
      # Consider making this provider-specific if needed
-     MIN_REQUEST_INTERVAL_SECONDS = 5.0 # Adjusted slightly, Gemini free is 15 RPM (4s), LLM depends on tier
+     MIN_REQUEST_INTERVAL_SECONDS = 3.0 # Adjusted slightly, Gemini free is 15 RPM (4s), LLM depends on tier
 
      def __init__(self,
                   provider: str, # 'gemini' or 'LLM'

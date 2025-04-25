@@ -73,6 +73,17 @@
       "parameters": {},
       "selector": "a.wp-block-button__link:has-text('Log out')",
       "wait_after_secs": 0
+    },
+    {
+      "step_id": 8, // Example ID
+      "action": "select",
+      "description": "Select 'Weekly' notification frequency",
+      "parameters": {
+        "option_label": "Weekly" // Store the label (or value if preferred)
+        // "parameter_name": "notification_pref" // Optional parameterization
+      },
+      "selector": "select#notificationFrequency", // Selector for the <select> element
+      "wait_after_secs": 0.5
     }
     // ... more steps
   ]

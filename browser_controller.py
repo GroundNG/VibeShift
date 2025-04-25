@@ -646,7 +646,6 @@ class BrowserController:
         except Exception as e:
             logger.warning(f"Failed to hide recorder panel (might be removed or page navigated): {e}")
 
-    # --- Modify remove_recorder_panel ---
     def remove_recorder_panel(self):
         """Removes the recorder UI panel from the DOM if it exists."""
         if self.headless or not self.page: return
@@ -1060,10 +1059,10 @@ class BrowserController:
     def _get_random_viewport(self):
         """Provides a slightly randomized common viewport size."""
         common_sizes = [
-            {'width': 1280, 'height': 720},
-            {'width': 1366, 'height': 768},
+            # {'width': 1280, 'height': 720},
+            # {'width': 1366, 'height': 768},
             {'width': 800, 'height': 600},
-            {'width': 1536, 'height': 864},
+            # {'width': 1536, 'height': 864},
         ]
         base = random.choice(common_sizes)
         # Add small random offset
@@ -1528,3 +1527,38 @@ class BrowserController:
         delay = random.uniform(min_secs, max_secs)
         logger.debug(f"Applying human-like delay: {delay:.2f} seconds")
         time.sleep(delay)
+        
+    def _get_locator(self, selector: str):
+        """
+        Gets a Playwright locator for the first matching element,
+        handling potential XPath selectors passed as CSS.
+        """
+        if not self.page:
+            raise PlaywrightError("Page is not initialized.")
+        if not selector:
+            raise ValueError("Selector cannot be empty.")
+
+        # Basic check to see if it looks like XPath
+        # Playwright's locator handles 'xpath=...' automatically,
+        # but sometimes plain XPaths are passed. Let's try to detect them.
+        is_likely_xpath = selector.startswith(('/', '(', '.')) or \
+                          ('/' in selector and not any(c in selector for c in ['#', '.', '[', '>', '+', '~', '='])) # Avoid CSS chars
+
+        processed_selector = selector
+        if is_likely_xpath and not selector.startswith(('css=', 'xpath=')):
+            # If it looks like XPath, explicitly prefix it for Playwright's locator
+            logger.debug(f"Selector '{selector}' looks like XPath. Using explicit 'xpath=' prefix.")
+            processed_selector = f"xpath={selector}"
+        # If it starts with css= or xpath=, Playwright handles it.
+        # Otherwise, it's assumed to be a CSS selector.
+
+        try:
+            logger.debug(f"Attempting to create locator using: '{processed_selector}'")
+            # Use .first to always target a single element, consistent with other actions
+            locator = self.page.locator(processed_selector).first
+            return locator
+        except Exception as e:
+            # Catch errors during locator creation itself (e.g., invalid selector syntax)
+            logger.error(f"Failed to create locator for processed selector: '{processed_selector}'. Original: '{selector}'. Error: {e}")
+            # Re-raise using the processed selector in the message for clarity
+            raise PlaywrightError(f"Invalid selector syntax or error creating locator: '{processed_selector}'. Error: {e}") from e

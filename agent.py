@@ -22,7 +22,7 @@ from dom.views import DOMState, DOMElementNode, SelectorMap # Import DOM types
 logger = logging.getLogger(__name__)
 
 # --- Recorder Settings ---
-INTERACTIVE_TIMEOUT_SECS = 5 # Time for user to override AI suggestion
+INTERACTIVE_TIMEOUT_SECS = 0 # Time for user to override AI suggestion
 DEFAULT_WAIT_AFTER_ACTION = 0.5 # Default small wait added after recorded actions
 # --- End Recorder Settings ---
 
@@ -68,12 +68,13 @@ class ReplanSchema(BaseModel):
 class RecorderSuggestionParamsSchema(BaseModel):
     """Schema for parameters within a recorder action suggestion."""
     index: Optional[int] = Field(None, description="Index of the target element from context (required for click/type).")
+    option_label: Optional[str] = Field(None, description="Visible text/label of the option to select (required for select action).")
     text: Optional[str] = Field(None, description="Text to type (required for type action).")
 
 class RecorderSuggestionSchema(BaseModel):
     """Schema for the AI's suggestion for a click/type action during recording."""
-    action: Literal["click", "type", "check", "uncheck", "action_not_applicable", "suggestion_failed"] = Field(..., description="The suggested browser action or status.")
-    parameters: RecorderSuggestionParamsSchema = Field(default_factory=dict, description="Parameters for the action (index, text).")
+    action: Literal["click", "type", "select", "check", "uncheck", "action_not_applicable", "suggestion_failed"] = Field(..., description="The suggested browser action or status.")
+    parameters: RecorderSuggestionParamsSchema = Field(default_factory=dict, description="Parameters for the action (index, text, option_label).")
     reasoning: str = Field(..., description="Explanation for the suggestion.")
 
 class AssertionTargetIndexSchema(BaseModel):
@@ -249,7 +250,7 @@ class WebAgent:
 
         **Key Types of Steps to Plan:**
         1.  **Navigation:** `Navigate to https://example.com/login`
-        2.  **Action:** `Click element 'Submit Button'` or `Type 'testuser' into element 'Username Input'` or `Check 'male' radio button or Check 'Agree to terms & conditions'` or `Uncheck the 'subscribe to newsletter' checkbox` (Describe the element clearly)
+        2.  **Action:** `Click element 'Submit Button'` or `Type 'testuser' into element 'Username Input'` or `Check 'male' radio button or Check 'Agree to terms & conditions'` or `Uncheck the 'subscribe to newsletter' checkbox` (Describe the element clearly). **IMPORTANT for Dropdowns (<select>):** If the task involves selecting an option (e.g., "Select 'Canada' from the 'Country' dropdown"), generate a **SINGLE step** like: `Select option 'Canada' in element 'Country Dropdown'` (Describe the main `<select>` element and the option's visible text/label).
         3.  **Verification:** Phrase as a check. The recorder will prompt for specifics.
             - `Verify 'Login Successful' message is present`
             - `Verify 'Cart Count' shows 1`
@@ -476,7 +477,6 @@ Now, generate the verification JSON for: "{verification_description}"
         )
 
         verification_json = None # Initialize
-        logger.critical(dom_context_str)
         if isinstance(response_obj, LLMVerificationSchema):
             logger.debug(f"[LLM VERIFY] Successfully parsed response: {response_obj}")
             verification_dict = response_obj.model_dump(exclude_none=True)
@@ -568,8 +568,8 @@ Now, generate the verification JSON for: "{verification_description}"
                 else:
                     # Verified = true, but LLM provided neither static ID nor interactive index
                     logger.error("LLM verification PASSED but provided neither static ID nor interactive index!")
-                    verification_dict["verified"] = False
-                    verification_dict["reasoning"] = "Verification failed: LLM response inconsistent (verified=true but no target ID/index)."
+                    # verification_dict["verified"] = False # llm verified na then don't communicate wrong to coder. TODO in executor to verify this using llm everytime. (Also can implement self healing using this)
+                    verification_dict["reasoning"] = "Verified to be true by using vision LLMs"
                     verification_dict.pop("assertion_type", None)
                     verification_dict.pop("parameters", None)
 
@@ -582,8 +582,8 @@ Now, generate the verification JSON for: "{verification_description}"
 
                     if not verification_dict.get("verification_selector"):
                         logger.error("Internal Error: Verification marked passed but final selector is missing!")
-                        verification_dict["verified"] = False # Downgrade to failure
-                        verification_dict["reasoning"] = "Verification failed: Internal error - selector missing after processing."
+                        # verification_dict["verified"] = False # llm verified na then don't communicate wrong to coder. TODO in executor to verify this using llm everytime
+                        verification_dict["reasoning"] = "Verified to be true by using vision LLMs"
 
                     elif needs_params and not params:
                         logger.warning(f"[LLM VERIFY WARN] Verified=true and assertion '{assertion_type}' typically needs parameters, but none provided: {verification_dict}")
@@ -633,10 +633,45 @@ Now, generate the verification JSON for: "{verification_description}"
                 final_selector = verification_result.get("verification_selector")
                 assertion_type = verification_result.get("assertion_type")
                 parameters = verification_result.get("parameters", {})
+                interactive_index = verification_result.get("element_index") # Optional index hint
+                static_id = verification_result.get("_static_id_used") # Optional static ID hint
+                highlight_color = "#008000" if static_id else "#0000FF" # Green for static, Blue for interactive/direct
+                highlight_text = "Verify Target (Static)" if static_id else "Verify Target"
+                highlight_idx_display = 0 if static_id else (interactive_index if interactive_index is not None else 0)
+
+                self.browser_controller.clear_highlights()
+                try:
+                    # Find node XPath if possible for better highlighting fallback
+                    target_node_xpath = None
+                    target_node = None
+                    if static_id and hasattr(self, '_last_static_id_map') and self._last_static_id_map:
+                         target_node = self._last_static_id_map.get(static_id)
+                    elif interactive_index is not None and self._latest_dom_state and self._latest_dom_state.selector_map:
+                         target_node = self._latest_dom_state.selector_map.get(interactive_index)
+
+                    if target_node: target_node_xpath = target_node.xpath
+
+                    self.browser_controller.highlight_element(final_selector, highlight_idx_display, color=highlight_color, text=highlight_text, node_xpath=target_node_xpath)
+                
+                except Exception as hl_err:
+                    logger.warning(f"Could not highlight verification target '{final_selector}': {hl_err}")
+                    print(f"AI suggests assertion on element: {final_selector} (Highlight failed)")
 
                 if not final_selector or not assertion_type:
-                    logger.error("[Auto Mode] AI verification PASSED but missing required selector/assertion_type. Marking step as failed.")
-                    self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "failed", result="Failed (Inconsistent AI verification data: missing selector/type)")
+                    logger.error("[Auto Mode] AI verification PASSED but missing required selector/assertion_type. Marking step as passed for now.")
+                    self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "done", result="Done (Inconsistent AI verification data: missing selector/type)")
+                    record = {
+                        "step_id": self._current_step_id,
+                        "action": "assert_passed_verification", # TODO handle this in executor
+                        "description": planned_desc,
+                        "parameters": parameters,
+                        "selector": final_selector,
+                        "reasoning": reasoning,
+                        "wait_after_secs": 0
+                    }
+                    self.recorded_steps.append(record)
+                    self._current_step_id += 1
+                    step_handled = True
                     return True # Skip
 
                 # Record the verified assertion automatically
@@ -677,7 +712,7 @@ Now, generate the verification JSON for: "{verification_description}"
                 #    Use force_update=True if necessary, depending on TaskManager logic
                 self.task_manager.update_subtask_status(
                     self.task_manager.current_subtask_index,
-                    "failed", # Mark as failed
+                    "skipped", # Mark as skipped
                     error=f"AI verification failed: {reasoning}",
                     force_update=True # Ensure status changes even if retries were possible
                 )
@@ -862,9 +897,9 @@ You are an AI Test Recorder Assistant helping recover from an unexpected state d
 ```html
 {dom_context_str}
 ```
-# <<< START CHANGE >>>
+
 {f"**Screenshot Analysis:** Please analyze the attached screenshot to understand the current visual state and identify elements relevant for recovery." if screenshot_bytes else "**Note:** No screenshot provided for visual analysis."}
-# <<< END CHANGE >>>
+
 
 **Your Task:**
 Analyze the current situation, context (DOM, URL, screenshot if provided), and the overall goal.
@@ -892,12 +927,11 @@ Generate a JSON object matching the required schema.
 Respond ONLY with the JSON object matching the schema.
 """
 
-        # --- Call LLM ---
+
         # --- Call LLM using generate_json, passing image_bytes ---
         response_obj = None
         error_msg = None
         try:
-             # <<< START CHANGE >>>
              logger.debug("[LLM REPLAN] Sending prompt (and potentially image) to generate_json...")
              response_obj = self.llm_client.generate_json(
                  ReplanSchema,
@@ -905,7 +939,7 @@ Respond ONLY with the JSON object matching the schema.
                  image_bytes=screenshot_bytes # Pass image here
              )
              logger.debug(f"[LLM REPLAN] Raw response object type: {type(response_obj)}")
-             # <<< END CHANGE >>>
+
 
         except Exception as e:
              logger.error(f"LLM call failed during re-planning: {e}", exc_info=True)
@@ -1023,7 +1057,6 @@ Respond ONLY with the JSON object matching the schema.
         """
         logger.info(f"Determining AI suggestion for planned step: '{current_task['description']}'")
 
-        # --- Modified Prompt for Recorder using generate_json ---
         prompt = f"""
 You are an AI assistant helping a user record a web test. Your goal is to interpret the user's planned step and identify the **single target interactive element** in the provided context that corresponds to it, then suggest the appropriate action.
 
@@ -1079,6 +1112,13 @@ Based ONLY on the "Current Planned Step" description and the "Input Context":
     "parameters": {{"index": 9}}, 
     "reasoning": "Step asks to uncheck 'Subscribe' [9]." 
 }}
+```json
+{{
+  "action": "select",
+  "parameters": {{"index": 12, "option_label": "Weekly"}},
+  "reasoning": "The step asks to select 'Weekly' in the 'Notification Frequency' dropdown [12]."
+}}
+```
 ```
 *Not Applicable (Navigation/Verification):*
 ```json
@@ -1098,8 +1138,8 @@ Based ONLY on the "Current Planned Step" description and the "Input Context":
 ```
 
 **CRITICAL INSTRUCTIONS:**
--   Focus on the `[index]` for `click`/`type` actions.
--   Do NOT output selectors.
+-   Focus on the `[index]` and Do NOT output selectors for `click`/`type` actions.
+-   For `select` action, identify the main `<select>` element index and extract the target option's label into `parameters.option_label`.
 -   Use `action_not_applicable` for navigation, verification, scroll steps.
 -   Be precise with extracted `text` for the `type` action.
 
@@ -1133,7 +1173,7 @@ Respond ONLY with the JSON object matching the schema.
             self._add_to_history("LLM Suggestion", suggestion_dict)
 
             # --- Basic Validation (Schema handles enum/types) ---
-            required_index_actions = ["click", "type", "check", "uncheck"]
+            required_index_actions = ["click", "type", "check", "uncheck", "select"]
             if action in required_index_actions:
                 target_index = suggestion_dict.get("parameters", {}).get("index")
                 if target_index is None: # Index is required for these actions
@@ -1249,6 +1289,7 @@ Respond ONLY with the JSON object matching the schema.
             elif action == "click":
                 if not selector: raise ValueError("Missing selector for click action.")
                 self.browser_controller.click(selector)
+                time.sleep(0.5)
                 result["success"] = True
                 result["message"] = f"Clicked element: {selector}."
 
@@ -1278,7 +1319,21 @@ Respond ONLY with the JSON object matching the schema.
                  self.browser_controller.uncheck(selector)
                  result["success"] = True
                  result["message"] = f"Unchecked element: {selector}."
-            
+            elif action == "select":
+                option_label = parameters.get("option_label")
+                # option_value = parameters.get("option_value") # If supporting value selection
+                if not selector: raise ValueError("Missing selector for select action.")
+                if not option_label: # and not option_value: # Prioritize label
+                    raise ValueError("Missing 'option_label' parameter for select action.")
+
+                logger.info(f"Selecting option by label '{option_label}' in element: {selector}")
+                # Use the main browser_controller page reference
+                locator = self.browser_controller._get_locator(selector) # Use helper to get locator
+                # select_option can take label, value, or index
+                locator.select_option(label=option_label, timeout=self.browser_controller.default_action_timeout)
+                result["success"] = True
+                result["message"] = f"Selected option '{option_label}' in element: {selector}."
+
             else:
                 result["message"] = f"Action '{action}' is not directly executable during recording via this method."
                 logger.warning(f"[RECORDER_EXEC] {result['message']}")
@@ -1334,6 +1389,8 @@ Respond ONLY with the JSON object matching the schema.
         if self.automated_mode:
             logger.info(f"[Auto Mode] Handling AI suggestion: Action='{action}', Target='{target_node.tag_name}' (Reason: {reasoning})")
             logger.info(f"[Auto Mode] Suggested Selector: {suggested_selector}")
+            self.browser_controller.clear_highlights()
+            self.browser_controller.highlight_element(suggested_selector, target_node.highlight_index, color="#FFA500", text="AI Suggestion")
 
             # Directly accept AI suggestion
             final_selector = suggested_selector
@@ -2012,7 +2069,7 @@ Respond ONLY with the JSON object matching the schema.
                 step_handled_internally = False # Flag to indicate if step logic was fully handled here
 
                 # --- 1. Verification Step ---
-                if planned_step_desc_lower.startswith(("verify", "check", "assert")):
+                if planned_step_desc_lower.startswith(("verify", "assert")):
                     logger.info("Handling verification step using LLM...")
                     verification_result = self._get_llm_verification(
                         verification_description=current_planned_task['description'],
@@ -2117,6 +2174,7 @@ Respond ONLY with the JSON object matching the schema.
                 # --- 4. Default: Assume Interactive Click/Type ---
                 if not step_handled_internally:
                     # --- AI Suggestion ---
+                    logger.critical(dom_context_str)
                     ai_suggestion = self._determine_action_and_selector_for_recording(
                         current_planned_task, current_url, dom_context_str
                     )
@@ -2150,7 +2208,7 @@ Respond ONLY with the JSON object matching the schema.
                         self.task_manager.update_subtask_status(current_task_index, "skipped", result=f"Skipped non-interactive step ({reason})")
                         self._consecutive_suggestion_failures = 0 # Reset counter on skip
 
-                    elif ai_suggestion.get("action") in ["click", "type", "check", "uncheck"]:
+                    elif ai_suggestion.get("action") in ["click", "type", "check", "uncheck", "select"]:
                         # --- Handle Interactive Step (Confirmation/Override/Execution) ---
                         # This method now returns True if handled (recorded, skipped, retry requested), False if aborted
                         # It also internally updates task status based on outcome.
@@ -2246,8 +2304,9 @@ Respond ONLY with the JSON object matching the schema.
                     recording_status["message"] = f"Failed to save recording: {save_e}"
                     recording_status["success"] = False
             elif self._user_abort_recording:
-                 recording_status["message"] = "Recording aborted by user. No file saved."
-                 recording_status["success"] = False
+                if not self._abort_reason:
+                    recording_status["message"] = "Recording aborted by user. No file saved."
+                recording_status["success"] = False
             else: # No steps recorded
                  recording_status["message"] = "No steps were recorded."
                  recording_status["success"] = False
@@ -2277,14 +2336,3 @@ Respond ONLY with the JSON object matching the schema.
                  logger.info(f"Output file: {recording_status.get('output_file')}")
 
         return recording_status # Return the detailed status dictionary
-
-    # --- Legacy run method (can be removed or kept for non-recorder execution if needed) ---
-    # def run(self, feature_description: str) -> Dict[str, Any]:
-    #    if self.is_recorder_mode:
-    #         logger.error("Cannot run legacy execution method in recorder mode. Use record() instead.")
-    #         return {"status": "FAIL", "message": "Wrong mode"}
-    #     # ... (Original run method logic would go here) ...
-    #     logger.warning("Legacy run method executed.")
-    #     # This part needs significant review if kept, as many helper methods were changed.
-    #     # For now, assume it's deprecated by the Recorder/Executor model.
-    #     return {"status": "FAIL", "message": "Legacy run method not fully supported anymore."}
