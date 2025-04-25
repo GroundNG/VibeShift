@@ -8,7 +8,7 @@ This project provides an AI-powered agent designed to streamline web testing wor
 
 1.  **Record new test flows:** Describe a user journey in natural language, and the agent will interact with the browser (using Playwright) under AI guidance to generate a reproducible test script (JSON format).
 2.  **Execute existing tests:** Run previously recorded test scripts to perform regression testing, ensuring new code changes haven't broken existing functionality.
-3.  **Discover potential test steps:** Crawl a website, analyze pages using vision and DOM structure, and ask an LLM (Google Gemini) to suggest relevant test steps for different pages.
+3.  **Discover potential test steps:** Crawl a website, analyze pages using vision and DOM structure, and ask an LLM to suggest relevant test steps for different pages.
 
 This creates a tighter feedback loop, automating the testing process and allowing the AI assistant (and the developer) to quickly identify and fix issues or regressions.
 
@@ -17,7 +17,7 @@ This creates a tighter feedback loop, automating the testing process and allowin
 *   **MCP Integration:** Seamlessly integrates with AI coding assistants supporting MCP via FastMCP.
 *   **AI-Assisted Test Recording:** Generate Playwright-based test scripts from natural language descriptions (in automated mode).
 *   **Deterministic Test Execution:** Run recorded JSON test files reliably using Playwright.
-*   **AI-Powered Test Discovery:** Crawl websites and leverage LLM (Gemini Vision) to suggest test steps for discovered pages.
+*   **AI-Powered Test Discovery:** Crawl websites and leverage any LLM (in openai compliant format) to suggest test steps for discovered pages.
 *   **Regression Testing:** Easily run existing test suites to catch regressions.
 *   **Automated Feedback Loop:** Execution results (including failures, screenshots, console logs) are returned, providing direct feedback to the AI assistant.
 *   **Playwright-Based:** Utilizes the powerful Playwright library for robust browser automation.
@@ -39,7 +39,7 @@ This creates a tighter feedback loop, automating the testing process and allowin
 2.  **AI Coding Agent:** Recognizes the intent and uses MCP to call the appropriate tool provided by the `MCP Server`.
 3.  **MCP Server:** Routes the request to the corresponding function (`record_test_flow`, `run_regression_test`, `discover_test_flows`, `list_recorded_tests`).
 4.  **Web Test Agent:**
-    *   **Recording:** The `WebAgent` (in automated mode) interacts with the LLM (Gemini) to plan steps, controls the browser via `BrowserController` (Playwright), processes HTML/Vision, and saves the resulting test steps to a JSON file in the `output/` directory.
+    *   **Recording:** The `WebAgent` (in automated mode) interacts with the LLM to plan steps, controls the browser via `BrowserController` (Playwright), processes HTML/Vision, and saves the resulting test steps to a JSON file in the `output/` directory.
     *   **Execution:** The `TestExecutor` loads the specified JSON test file, uses `BrowserController` to interact with the browser according to the recorded steps, and captures results, screenshots, and console logs.
     *   **Discovery:** The `CrawlerAgent` uses `BrowserController` and `LLMClient` to crawl pages and suggest test steps.
 5.  **Browser:** Playwright drives the actual browser interaction.
@@ -50,7 +50,7 @@ This creates a tighter feedback loop, automating the testing process and allowin
 ### Prerequisites
 
 *   Python 3.10+
-*   Access to Google Gemini API (or other configured LLM)
+*   Access to any LLM (gemini 2.0 flash works best for free in my testing)
 *   MCP installed (`pip install mcp[cli]`)
 *   Playwright browsers installed (`playwright install`)
 
@@ -82,9 +82,9 @@ This creates a tighter feedback loop, automating the testing process and allowin
 2.  Add your LLM API key and other necessary details:
     ```dotenv
     # .env
-    LLM_API_KEY="YOUR_GEMINI_API_KEY"
+    LLM_API_KEY="YOUR_LLM_API_KEY"
     ```
-    *   Replace `YOUR_GEMINI_API_KEY` with your actual key.
+    *   Replace `YOUR_LLM_API_KEY` with your actual key.
 
 ### Adding the MCP Server
 Add this to you mcp config:
