@@ -1,4 +1,4 @@
-# Web TestNG MCP
+# QA MCP
 
 This project provides an AI-powered agent designed to streamline web testing workflows, particularly for developers using AI coding assistants like GitHub Copilot, Cursor, Roo Code, etc. It integrates directly into these assistants via the **MCP (Machine Command Protocol)**, allowing you to automate test recording, execution, and discovery using natural language prompts.
 
@@ -91,7 +91,7 @@ Add this to you mcp config:
 ```json
 {
   "mcpServers": {
-    "GroundNG-Web-Tester":{
+    "Web-QA":{
       "command": "uv",
       "args": ["--directory","path/to/cloned_repo", "run", "mcp_server.py"]
     }
