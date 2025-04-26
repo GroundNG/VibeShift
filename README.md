@@ -12,6 +12,10 @@ This project provides an AI-powered agent designed to streamline web testing wor
 
 This creates a tighter feedback loop, automating the testing process and allowing the AI assistant (and the developer) to quickly identify and fix issues or regressions.
 
+# Demo
+[![Click to play](https://img.youtube.com/vi/wCbCUCqjnXQ/maxresdefault.jpg)](https://youtu.be/wCbCUCqjnXQ)
+[![Full length development](https://img.youtube.com/vi/D5yeIS-0Ui4/maxresdefault.jpg)](https://youtu.be/D5yeIS-0Ui4)
+
 ## Features
 
 *   **MCP Integration:** Seamlessly integrates with AI coding assistants supporting MCP via FastMCP.
