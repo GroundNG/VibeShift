@@ -1,4 +1,4 @@
-# executor.py
+# /src/executor.py
 import json
 import logging
 import time
@@ -7,8 +7,8 @@ from playwright.sync_api import sync_playwright, Page, TimeoutError as Playwrigh
 from typing import Optional, Dict, Any
 import re
 
-from browser_controller import BrowserController # Re-use for browser setup/teardown
-from llm_client import LLMClient
+from ..browser.browser_controller import BrowserController # Re-use for browser setup/teardown
+from ..llm.llm_client import LLMClient
 
 
 logger = logging.getLogger(__name__)
@@ -285,7 +285,7 @@ Current URL: {current_url}
 HTML Context (Visible elements, interactive elements marked with `[index]`, static with `(Static)`):
 ```html
 {dom_context_str}
-\```
+```
 
 Based on BOTH the visual evidence in the screenshot AND the HTML context (Prioritize html context more as screenshot will have some delay from when it was asked and when it was taken), is the verification condition "{description}" currently met?
 If you think due to the delay in html AND screenshot, state might have changed from where the condition was met, then also respond with YES

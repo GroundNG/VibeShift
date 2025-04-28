@@ -1,4 +1,4 @@
-# dom/service.py
+# /src/dom/service.py
 import gc
 import json
 import logging

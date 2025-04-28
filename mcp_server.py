@@ -15,11 +15,11 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.prompts import base as mcp_prompts
 
 # Import necessary components from your existing code
-from agent import WebAgent # Needs refactoring for non-interactive use
-from llm_client import LLMClient
-from executor import TestExecutor
-from utils import load_api_key
-from crawler_agent import CrawlerAgent
+from src.agents.recorder_agent import WebAgent # Needs refactoring for non-interactive use
+from src.agents.crawler_agent import CrawlerAgent
+from src.llm.llm_client import LLMClient
+from src.execution.executor import TestExecutor
+from src.utils.utils import load_api_key
 
 # Configure logging for the MCP server
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - [MCP Server] %(message)s')

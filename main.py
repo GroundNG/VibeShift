@@ -6,11 +6,11 @@ import time
 import json 
 import argparse
 
-from agent import WebAgent
-from crawler_agent import CrawlerAgent
-from llm_client import LLMClient
-from executor import TestExecutor
-from utils import load_api_key
+from src.agents.recorder_agent import WebAgent
+from src.agents.crawler_agent import CrawlerAgent
+from src.llm.llm_client import LLMClient
+from src.execution.executor import TestExecutor
+from src.utils.utils import load_api_key
 import logging
 import warnings
 

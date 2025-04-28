@@ -1,4 +1,4 @@
-# crawler_agent.py
+# /src/crawler_agent.py
 import logging
 import time
 from urllib.parse import urlparse, urljoin
@@ -11,8 +11,8 @@ import json
 from pydantic import BaseModel, Field
 
 # Use relative imports within the package if applicable, or adjust paths
-from browser_controller import BrowserController
-from llm_client import LLMClient
+from ..browser.browser_controller import BrowserController
+from ..llm.llm_client import LLMClient
 
 logger = logging.getLogger(__name__)
 

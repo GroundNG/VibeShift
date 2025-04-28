@@ -1,4 +1,4 @@
-# utils.py
+# /src/utils/utils.py
 import os
 from dotenv import load_dotenv
 

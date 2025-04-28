@@ -1,4 +1,4 @@
-# llm_client.py
+# /src/llm/lm_client.py
 from google import genai
 from PIL import Image
 import io

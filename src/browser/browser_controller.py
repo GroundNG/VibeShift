@@ -1,4 +1,4 @@
-# browser_controller.py
+# /src/browser_controller.py
 from playwright.sync_api import sync_playwright, Page, Browser, Playwright, TimeoutError as PlaywrightTimeoutError, Error as PlaywrightError, Locator, ConsoleMessage, expect
 import logging
 import time
@@ -8,8 +8,8 @@ import os
 from typing import Optional, Any, Dict, List, Callable, Tuple
 import threading
 
-from dom.service import DomService
-from dom.views import DOMState, DOMElementNode, SelectorMap
+from ..dom.service import DomService
+from ..dom.views import DOMState, DOMElementNode, SelectorMap
 
 logger = logging.getLogger(__name__)
 

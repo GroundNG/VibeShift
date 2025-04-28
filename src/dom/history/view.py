@@ -1,6 +1,6 @@
-# dom/history/view.py 
+# /src/dom/history/view.py 
 from dataclasses import dataclass
-from typing import Optional, List, Dict # Added Dict
+from typing import Optional, List, Dict, Union # Added Dict
 
 # Use Pydantic for coordinate models if available and desired
 try:
@@ -32,7 +32,6 @@ except ImportError:
     CoordinateSet = Dict[str, Union[Coordinates, float]]
     ViewportInfo = Dict[str, float]
     BaseModel = object # Placeholder
-    logger.warning("Pydantic not found. Using basic dicts for coordinate models.")
 
 
 @dataclass
