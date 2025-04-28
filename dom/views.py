@@ -218,102 +218,106 @@ class DOMElementNode(DOMBaseNode):
             if node_id in processed_node_ids: return
             processed_node_ids.add(node_id)
 
+            is_node_visible = node.is_visible
+            visibility_marker = "" if is_node_visible else " (Not Visible)" 
+
             should_add_current_node = False
             line_to_add = ""
             is_interactive = node.highlight_index is not None
             temp_static_id_assigned = None # Track if ID was assigned to this node
 
-            # Only consider adding the node if it's visible
-            if node.is_visible:
-                indent = '  ' * depth
 
-                # --- Attribute Extraction (Common logic) ---
-                attributes_to_show = {}
-                default_attrs = ['id', 'name', 'class', 'aria-label', 'placeholder', 'role', 'type', 'value', 'title', 'alt', 'href', 'data-testid', 'data-value']
-                attrs_to_check = include_attributes if include_attributes else default_attrs
-                extract_attrs_for_this_node = is_interactive or (context_purpose == 'verification')
-                if extract_attrs_for_this_node:
-                    for attr_key in attrs_to_check:
-                        if attr_key in node.attributes and node.attributes[attr_key] is not None: # Check for not None
-                            # Simple check to exclude extremely long class lists for brevity, unless it's ID/testid
-                            if attr_key == 'class' and len(node.attributes[attr_key]) > 100 and context_purpose == 'action':
-                                attributes_to_show[attr_key] = node.attributes[attr_key][:97] + "..."
-                            else:
-                                attributes_to_show[attr_key] = node.attributes[attr_key]
-                attrs_str = ""
-                if attributes_to_show:
-                    parts = []
-                    for key, value in attributes_to_show.items():
-                        value_str = str(value) # Ensure it's a string
-                        # Limit length for display
-                        display_value = value_str if len(value_str) < 50 else value_str[:47] + '...'
-                        # *** CORRECT HTML ESCAPING for attribute value strings ***
-                        display_value = display_value.replace('&', '&').replace('<', '<').replace('>', '>').replace('"', '"')
-                        parts.append(f'{key}="{display_value}"')
-                    attrs_str = " ".join(parts)
+            indent = '  ' * depth
 
-                # --- Format line based on Interactive vs. Static ---
-                if is_interactive:
-                    # == INTERACTIVE ELEMENT == (Always include)
-                    text_content = node.get_all_text_till_next_clickable_element()
-                    text_content = ' '.join(text_content.split()) if text_content else ""
-                    # Truncate long text for display
-                    if len(text_content) > 150: text_content = text_content[:147] + "..."
-
-                    line_to_add = f"{indent}[{node.highlight_index}]<{node.tag_name}"
-                    if attrs_str: line_to_add += f" {attrs_str}"
-                    if text_content: line_to_add += f">{text_content}</{node.tag_name}>"
-                    else: line_to_add += " />"
-                    should_add_current_node = True
-
-                elif static_element_count < max_static_elements:
-                    # == VISIBLE STATIC ELEMENT ==
-                    text_content = get_direct_visible_text(node)
-                    include_this_static = False
-
-                    # Determine if static node is relevant for verification
-                    if context_purpose == 'verification':
-                        common_static_tags = {'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'span', 'div', 'li', 'label', 'td', 'th', 'strong', 'em', 'dt', 'dd'}
-                        # Include if common tag OR has text OR *has attributes calculated in attrs_str*
-                        if node.tag_name in common_static_tags or text_content or attrs_str:
-                            include_this_static = True
-
-                    if include_this_static:
-                        # --- Assign temporary static ID ---
-                        current_static_id = f"s{static_id_counter}"
-                        temp_static_id_map[current_static_id] = node
-                        temp_static_id_assigned = current_static_id # Mark that ID was assigned
-                        static_id_counter += 1
-                        
-                        # *** Start building the line ***
-                        line_to_add = f"{indent}<{node.tag_name}"
-
-                        # *** CRUCIAL: Add the calculated attributes string ***
-                        if attrs_str:
-                            line_to_add += f" {attrs_str}"
-                            
-                        # --- Add the static ID attribute to the string ---
-                        line_to_add += f' data-static-id="{current_static_id}"'
-
-                        # *** Add the static marker ***
-                        line_to_add += " (Static)"
-
-                        # *** Add parent hint ONLY if element lacks key identifiers ***
-                        node_attrs = node.attributes # Use original attributes for this check
-                        has_key_identifier = node_attrs.get('id') or node_attrs.get('data-testid') or node_attrs.get('name')
-                        if not has_key_identifier:
-                             parent_hint = get_parent_hint(node)
-                             if parent_hint:
-                                 line_to_add += f" {parent_hint}"
-
-                        # *** Add text content and close tag ***
-                        if text_content:
-                            line_to_add += f">{text_content}</{node.tag_name}>"
+            # --- Attribute Extraction (Common logic) ---
+            attributes_to_show = {}
+            default_attrs = ['id', 'name', 'class', 'aria-label', 'placeholder', 'role', 'type', 'value', 'title', 'alt', 'href', 'data-testid', 'data-value']
+            attrs_to_check = include_attributes if include_attributes else default_attrs
+            extract_attrs_for_this_node = is_interactive or (context_purpose == 'verification')
+            if extract_attrs_for_this_node:
+                for attr_key in attrs_to_check:
+                    if attr_key in node.attributes and node.attributes[attr_key] is not None: # Check for not None
+                        # Simple check to exclude extremely long class lists for brevity, unless it's ID/testid
+                        if attr_key == 'class' and len(node.attributes[attr_key]) > 100 and context_purpose == 'action':
+                            attributes_to_show[attr_key] = node.attributes[attr_key][:97] + "..."
                         else:
-                            line_to_add += " />"
+                            attributes_to_show[attr_key] = node.attributes[attr_key]
+            attrs_str = ""
+            if attributes_to_show:
+                parts = []
+                for key, value in attributes_to_show.items():
+                    value_str = str(value) # Ensure it's a string
+                    # Limit length for display
+                    display_value = value_str if len(value_str) < 50 else value_str[:47] + '...'
+                    # *** CORRECT HTML ESCAPING for attribute value strings ***
+                    display_value = display_value.replace('&', '&').replace('<', '<').replace('>', '>').replace('"', '"')
+                    parts.append(f'{key}="{display_value}"')
+                attrs_str = " ".join(parts)
 
-                        should_add_current_node = True
-                        static_element_count += 1
+            # --- Format line based on Interactive vs. Static ---
+            if is_interactive:
+                # == INTERACTIVE ELEMENT == (Always include)
+                text_content = node.get_all_text_till_next_clickable_element()
+                text_content = ' '.join(text_content.split()) if text_content else ""
+                # Truncate long text for display
+                if len(text_content) > 150: text_content = text_content[:147] + "..."
+
+                line_to_add = f"{indent}[{node.highlight_index}]<{node.tag_name}"
+                if attrs_str: line_to_add += f" {attrs_str}"
+                if text_content: line_to_add += f">{text_content}</{node.tag_name}>"
+                else: line_to_add += " />"
+                line_to_add += visibility_marker
+                should_add_current_node = True
+
+            elif static_element_count < max_static_elements:
+                # == VISIBLE STATIC ELEMENT ==
+                text_content = get_direct_visible_text(node)
+                include_this_static = False
+
+                # Determine if static node is relevant for verification
+                if context_purpose == 'verification':
+                    common_static_tags = {'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'span', 'div', 'li', 'label', 'td', 'th', 'strong', 'em', 'dt', 'dd'}
+                    # Include if common tag OR has text OR *has attributes calculated in attrs_str*
+                    if node.tag_name in common_static_tags or text_content or attrs_str:
+                        include_this_static = True
+
+                if include_this_static:
+                    # --- Assign temporary static ID ---
+                    current_static_id = f"s{static_id_counter}"
+                    temp_static_id_map[current_static_id] = node
+                    temp_static_id_assigned = current_static_id # Mark that ID was assigned
+                    static_id_counter += 1
+                    
+                    # *** Start building the line ***
+                    line_to_add = f"{indent}<{node.tag_name}"
+
+                    # *** CRUCIAL: Add the calculated attributes string ***
+                    if attrs_str:
+                        line_to_add += f" {attrs_str}"
+                        
+                    # --- Add the static ID attribute to the string ---
+                    line_to_add += f' data-static-id="{current_static_id}"'
+
+                    # *** Add the static marker ***
+                    line_to_add += " (Static)"
+                    line_to_add += visibility_marker
+
+                    # *** Add parent hint ONLY if element lacks key identifiers ***
+                    node_attrs = node.attributes # Use original attributes for this check
+                    has_key_identifier = node_attrs.get('id') or node_attrs.get('data-testid') or node_attrs.get('name')
+                    if not has_key_identifier:
+                            parent_hint = get_parent_hint(node)
+                            if parent_hint:
+                                line_to_add += f" {parent_hint}"
+
+                    # *** Add text content and close tag ***
+                    if text_content:
+                        line_to_add += f">{text_content}</{node.tag_name}>"
+                    else:
+                        line_to_add += " />"
+
+                    should_add_current_node = True
+                    static_element_count += 1
 
             # --- Add the formatted line if needed ---
             if should_add_current_node:
@@ -322,7 +326,7 @@ class DOMElementNode(DOMBaseNode):
 
             # --- ALWAYS Recurse into children (unless static limit hit) ---
             # We recurse even if the parent wasn't added, because children might be visible/interactive
-            if not is_interactive and static_element_count >= max_static_elements:
+            if static_element_count >= max_static_elements:
                  # Stop recursing down static branches if limit is hit
                  pass
             else:

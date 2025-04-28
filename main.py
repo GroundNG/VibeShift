@@ -153,11 +153,12 @@ if __name__ == "__main__":
 
         elif args.mode == 'execute':
             logger.info(f"Starting in EXECUTE mode for file: {args.file}")
+            llm_client = LLMClient(gemini_api_key=api_key, provider='gemini')
             HEADLESS_BROWSER = args.headless # Use flag for executor headless
             print(f"Running in EXECUTE mode ({'Headless' if HEADLESS_BROWSER else 'Visible Browser'}).")
 
             # Executor doesn't need LLM client directly
-            executor = TestExecutor(headless=HEADLESS_BROWSER)
+            executor = TestExecutor(headless=HEADLESS_BROWSER, llm_client=llm_client)
             test_result = executor.run_test(args.file)
 
             # --- Display Test Execution Results ---

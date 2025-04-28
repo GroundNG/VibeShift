@@ -6,8 +6,10 @@ import os
 from playwright.sync_api import sync_playwright, Page, TimeoutError as PlaywrightTimeoutError, Error as PlaywrightError, expect
 from typing import Optional, Dict, Any
 import re
-# Use relative import for BrowserController if needed, or assume it's available
+
 from browser_controller import BrowserController # Re-use for browser setup/teardown
+from llm_client import LLMClient
+
 
 logger = logging.getLogger(__name__)
 
@@ -16,12 +18,21 @@ class TestExecutor:
     Executes a recorded test case from a JSON file deterministically using Playwright.
     """
 
-    def __init__(self, headless: bool = True, default_timeout: int = 5000): # Default timeout for actions/assertions
+    def __init__(self, llm_client: Optional[LLMClient], headless: bool = True, default_timeout: int = 5000): # Default timeout for actions/assertions
         self.headless = headless
         self.default_timeout = default_timeout # Milliseconds
+        self.llm_client = llm_client
         self.browser_controller: Optional[BrowserController] = None
         self.page: Optional[Page] = None
         logger.info(f"TestExecutor initialized (headless={headless}, timeout={default_timeout}ms).")
+
+        if not self.llm_client and not headless: # Vision verification needs LLM
+             logger.warning("TestExecutor initialized without LLMClient. Vision-based assertions ('assert_passed_verification') will fail.")
+        elif self.llm_client:
+             logger.info(f"TestExecutor initialized (headless={headless}, timeout={default_timeout}ms) with LLMClient for provider '{self.llm_client.provider}'.")
+        else:
+             logger.info(f"TestExecutor initialized (headless={headless}, timeout={default_timeout}ms). LLMClient not provided (headless mode or vision assertions not needed).")
+
 
     def _get_locator(self, selector: str):
         """Helper to get a Playwright locator, handling potential errors."""
@@ -202,8 +213,22 @@ class TestExecutor:
                          expected_count = params.get("expected_count")
                          if not selector: raise ValueError("Missing 'selector' for assertion.")
                          if expected_count is None: raise ValueError("Missing 'expected_count'.")
-                         locator = self._get_locator(selector)
-                         expect(locator).to_have_count(expected_count, timeout=self.default_timeout)
+                         if not isinstance(expected_count, int): raise ValueError("'expected_count' must be an integer.") # Add type check
+
+                         # --- FIX: Get locator for count without using .first ---
+                         # Apply the same selector processing as in _get_locator if needed
+                         is_likely_xpath = selector.startswith(('/', '(', '//')) or \
+                                          ('/' in selector and not any(c in selector for c in ['#', '.', '[', '>', '+', '~']))
+                         processed_selector = selector
+                         if is_likely_xpath and not selector.startswith(('css=', 'xpath=')):
+                             processed_selector = f"xpath={selector}"
+
+                         # Get the locator for potentially MULTIPLE elements
+                         count_locator = self.page.locator(processed_selector)
+                         # --- End FIX ---
+
+                         logger.info(f"Asserting count of elements matching '{processed_selector}' to be {expected_count}")
+                         expect(count_locator).to_have_count(expected_count, timeout=self.default_timeout)
                     elif action == "assert_checked":
                          if not selector: raise ValueError("Missing 'selector' for assert_checked.")
                          locator = self._get_locator(selector)
@@ -222,7 +247,72 @@ class TestExecutor:
                     elif action == "assert_enabled":
                          if not selector: raise ValueError("Missing 'selector' for assert_enabled.")
                          locator = self._get_locator(selector)
-                         expect(locator).not_to_be_enabled(timeout=self.default_timeout)
+                         expect(locator).to_be_enabled(timeout=self.default_timeout)
+                    elif action == "assert_passed_verification" or action == "assert_llm_verification":
+                        if not self.llm_client:
+                            raise PlaywrightError("LLMClient not available for vision-based verification step.")
+                        if not description:
+                             raise ValueError("Missing 'description' field for 'assert_passed_verification' step.")
+                        if not self.browser_controller:
+                            raise PlaywrightError("BrowserController not available for state gathering.")
+
+                        logger.info("Performing vision-based verification with DOM context...")
+
+                        # --- Gather Context ---
+                        screenshot_bytes = self.browser_controller.take_screenshot()
+                        current_url = self.browser_controller.get_current_url()
+                        dom_context_str = "DOM context could not be retrieved." # Default
+                        try:
+                            dom_state = self.browser_controller.get_structured_dom(highlight_all_clickable_elements=False) # No highlight during execution verification
+                            if dom_state and dom_state.element_tree:
+                                # Use 'verification' purpose for potentially richer context
+                                dom_context_str, _ = dom_state.element_tree.generate_llm_context_string(context_purpose='verification')
+                            else:
+                                logger.warning("Failed to get valid DOM state for vision verification.")
+                        except Exception as dom_err:
+                            logger.error(f"Error getting DOM context for vision verification: {dom_err}", exc_info=True)
+                        # --------------------
+
+                        if not screenshot_bytes:
+                             raise PlaywrightError("Failed to capture screenshot for vision verification.")
+
+
+                        prompt = f"""Analyze the provided webpage screenshot AND the accompanying HTML context.
+
+The goal during testing was to verify the following condition: "{description}"
+Current URL: {current_url}
+
+HTML Context (Visible elements, interactive elements marked with `[index]`, static with `(Static)`):
+```html
+{dom_context_str}
+\```
+
+Based on BOTH the visual evidence in the screenshot AND the HTML context (Prioritize html context more as screenshot will have some delay from when it was asked and when it was taken), is the verification condition "{description}" currently met?
+If you think due to the delay in html AND screenshot, state might have changed from where the condition was met, then also respond with YES
+
+IMPORTANT: Consider that elements might be in a loading state (e.g., placeholders described) OR a fully loaded state (e.g., actual images shown visually). If the current state reasonably fulfills the ultimate goal implied by the description (even if the exact visual differs due to loading, like placeholders becoming images), respond YES.
+
+Respond with only "YES" or "NO", followed by a brief explanation justifying your answer using evidence from the screenshot and/or HTML context.
+Example Response (Success): YES - The 'Welcome, User!' message [Static id='s15'] is visible in the HTML and visually present at the top of the screenshot.
+Example Response (Failure): NO - The HTML context shows an error message element [12] and the screenshot visually confirms the 'Invalid credentials' error.
+Example Response (Success - Placeholder Intent): YES - The description asked for 5 placeholders, but the screenshot and HTML show 5 fully loaded images within the expected containers ('div.image-container'). This fulfills the intent of ensuring the 5 image sections are present and populated.
+"""
+
+
+                        llm_response = self.llm_client.generate_multimodal(prompt, screenshot_bytes)
+                        logger.debug(f"Vision verification LLM response: {llm_response}")
+
+                        if llm_response.strip().upper().startswith("YES"):
+                             logger.info("✅ Vision verification PASSED (with DOM context).")
+                        elif llm_response.strip().upper().startswith("NO"):
+                             logger.error(f"❌ Vision verification FAILED (with DOM context). LLM Reasoning: {llm_response}")
+                             raise AssertionError(f"Vision verification failed: Condition '{description}' not met. LLM Reason: {llm_response}")
+                        elif llm_response.startswith("Error:"):
+                             logger.error(f"❌ Vision verification FAILED due to LLM error: {llm_response}")
+                             raise PlaywrightError(f"Vision verification LLM error: {llm_response}")
+                        else:
+                             logger.error(f"❌ Vision verification FAILED due to unclear LLM response: {llm_response}")
+                             raise AssertionError(f"Vision verification failed: Unclear LLM response. Response: {llm_response}")
                     # --- Add more actions/assertions as needed ---
                     else:
                         logger.warning(f"Unsupported action type '{action}' found in step {step_id}. Skipping.")

@@ -104,6 +104,9 @@ async def run_regression_test(test_file_path: str, headless: bool = True) -> Dic
     """
     logger.info(f"Received request to run regression test: '{test_file_path}', Headless: {headless}")
 
+    api_key = get_api_key()
+    llm_client = LLMClient(gemini_api_key=api_key, provider='gemini')
+    
     # Basic path validation (relative to server or absolute)
     if not os.path.isabs(test_file_path):
         # Assume relative to the server's working directory or a known output dir
@@ -126,7 +129,7 @@ async def run_regression_test(test_file_path: str, headless: bool = True) -> Dic
 
     try:
         # Executor doesn't need the LLM client
-        executor = TestExecutor(headless=headless)
+        executor = TestExecutor(headless=headless, llm_client=llm_client)
         logger.info(f"Delegating test execution for '{test_file_path}' to a separate thread...")
         test_result = await asyncio.to_thread(
             executor.run_test, # The function to run

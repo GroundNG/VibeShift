@@ -84,6 +84,21 @@
       },
       "selector": "select#notificationFrequency", // Selector for the <select> element
       "wait_after_secs": 0.5
+    },
+    {
+      "step_id": 9, // Example ID
+      "action": "assert_passed_verification", // Special action
+      "description": "Verify user avatar is displayed in header", // Original goal
+      "parameters": {
+        // Optional: might include reasoning from recorder's AI
+        "reasoning": "The avatar image was visually confirmed present by the vision LLM during recording."
+      },
+      "selector": null, // No specific selector needed for executor's check
+      "wait_after_secs": 0
+      // NOTE: During execution, the TestExecutor will take a screenshot
+      //       and use its own vision LLM call to re-verify the condition
+      //       described in the 'description' field. It passes if the LLM
+      //       confirms visually, otherwise it fails the test.
     }
     // ... more steps
   ]

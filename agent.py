@@ -44,6 +44,7 @@ class LLMVerificationSchema(BaseModel):
         'assert_text_equals',
         'assert_text_contains',
         'assert_visible',
+        'assert_llm_verification',
         'assert_hidden',
         'assert_attribute_equals',
         'assert_element_count',
@@ -68,7 +69,7 @@ class ReplanSchema(BaseModel):
 class RecorderSuggestionParamsSchema(BaseModel):
     """Schema for parameters within a recorder action suggestion."""
     index: Optional[int] = Field(None, description="Index of the target element from context (required for click/type).")
-    option_label: Optional[str] = Field(None, description="Visible text/label of the option to select (required for select action).")
+    option_label: Optional[str] = Field(None, description="Visible text/label of the option to select (**required for select action**)")
     text: Optional[str] = Field(None, description="Text to type (required for type action).")
 
 class RecorderSuggestionSchema(BaseModel):
@@ -347,7 +348,7 @@ class WebAgent:
 
         # --- Prompt Adjustment for generate_json ---
         prompt = f"""
-You are an AI Test Verification Assistant. Your task is to determine if a specific condition, **or its clear intent**, is met based on the current web page state.
+You are an AI Test Verification Assistant. Your task is to determine if a specific condition, **or its clear intent**, is met based on the current web page state and If the goal IS met, propose the **most robust and specific, deterministic assertion** possible to confirm this state.
 
 **Overall Goal:** {self.feature_description}
 **Verification Step:** {verification_description}
@@ -358,6 +359,7 @@ This section shows visible elements on the page.
 - Interactive elements are marked with `[index]` (e.g., `[5]<button>Submit</button>`).
 - Static elements crucial for context are marked with `(Static)` (e.g., `<p (Static)>Login Successful!</p>`).
 - Some plain static elements may include a hint about their parent, like `(inside: <div id="summary">)`, to help locate them.
+- Some may be not visible but are interactive, assertable
 ```html
 {dom_context_str}
 ```
@@ -375,7 +377,8 @@ This section shows visible elements on the page.
         *   If confirmed by an **interactive element `[index]`**: Set `element_index` to that index. `verification_static_id` should be null.
         *   If confirmed by a **static element shown with `data-static-id="sXXX"`**: Set `verification_static_id` to that ID string (e.g., "s15"). `element_index` should be null.
         *   **`verification_selector` (Set to null by you):** The system will generate the final CSS selector based on the provided index or static ID. Leave this field as `null`.
-        *   **`assertion_type` (Required):** Determine the most appropriate assertion type based on the **actual observed state** and the verification intent. **Prefer `assert_text_contains` for text verification unless the step demands an *exact* match.**
+        *   **`assertion_type` (Required):** Propose a specific, deterministic assertion. Determine the most appropriate assertion type based on the **actual observed state** and the verification intent. **Prefer `assert_text_contains` for text verification unless the step demands an *exact* match.**
+            *   Use `assert_llm_verification` for cases where vision LLMs will be better than any other selector for this problem. Visual UI stuff like overflow, truncation, overlap, positioning all this can't be determined via normal playwright automation. You need llm vision verification for such stuff.
             *   Use `assert_text_equals` / `assert_text_contains` for text content. Prefer this over visible unless text doesn't confirm the verification. Note to use the **EXACT TEXT INCLUDING ANY PUNCTUATION**
             *   Use `assert_checked` if the intent is to verify a checkbox or radio button **is currently selected/checked**.
             *   Use `assert_not_checked` if the intent is to verify it **is NOT selected/checked**.
@@ -384,6 +387,12 @@ This section shows visible elements on the page.
             *   Use `assert_attribute_equals` ONLY for comparing the *string value* of an attribute (e.g., `class="active"`, `value="Completed"`). **DO NOT use it for boolean attributes like `checked`, `disabled`, `selected`. Use state assertions instead.**
             *   Use `assert_element_count` for counting elements matching a selector.
         *   **`parameters` (Optional):** Provide necessary parameters ONLY if the chosen `assertion_type` requires them (e.g., `assert_text_equals` needs `expected_text`). For `assert_checked`, `assert_not_checked`, `assert_visible`, `assert_hidden`, `assert_disabled`, `assert_enabled`, parameters should generally be empty (`{{}}`) or omitted. Ensure parameters reflect the *actual observed state* (e.g., observed text).
+    *   **Guidance for Robustness:**
+            *   **Prefer specific checks:** `assert_text_contains` on a specific message is better than just `assert_visible` on a generic container *if* the text confirms the verification goal.
+            *   **Dynamic Content:** For content that loads (e.g., images replacing placeholders, data appearing), prefer assertions on **stable containers** (`assert_element_count`, `assert_visible` on the container) or the **final loaded state** if reliably identifiable, rather than the transient loading state (like placeholder text).
+            *   **Element Targeting:** Identify the **single most relevant element** (interactive `[index]` OR static `data-static-id="sXXX"`) that **proves** the assertion. Set `element_index` OR `verification_static_id` accordingly.
+            *   **`verification_selector` (Set to null):** The system generates the final selector. Leave this null.
+            *   **`parameters` (Required if needed):** Provide necessary parameters based on the chosen `assertion_type` and the **actual observed state** (e.g., the exact text seen for `assert_text_contains`). Empty `{{}}` if no parameters needed (e.g., `assert_visible`).
     *   **If `verified` is FALSE:**
         *   `assertion_type`, `element_index`, `verification_selector`, `parameters` should typically be null/omitted.
 
@@ -393,13 +402,35 @@ This section shows visible elements on the page.
 ```json
 {{
   "verified": true,
-  "assertion_type": "assert_text_equals",
+  "assertion_type": "assert_text_contains", // Preferred over just visible
   "element_index": null,
   "verification_static_id": "s23", // ID from context
-  "verification_selector": null,   // System generates this
-  "parameters": {{ "expected_text": "logged in!" }},
-  "reasoning": "Verification step asked for 'You logged into...', but the static element <p data-static-id=\"s23\" (Static)> shows 'logged in!', confirming the intent."
+  "verification_selector": null,
+  "parameters": {{ "expected_text": "logged in!" }}, // Actual text observed
+  "reasoning": "The static element <p data-static-id='s23'> shows 'logged in!', fulfilling the verification step's goal."
 }}
+```json
+{{
+  "verified": true,
+  "assertion_type": "assert_element_count", // Verifying 5 items loaded
+  "element_index": null, // Index not needed if counting multiple matches
+  "verification_static_id": "s50", // Target the container element
+  "verification_selector": null, // System will generate selector for container s50
+  "parameters": {{ "expected_count": 5 }},
+  "reasoning": "The list container <ul data-static-id='s50'> visually contains 5 items, confirming the verification requirement."
+}}
+```
+```json
+{{
+  "verified": true,
+  "assertion_type": "assert_llm_verification",
+  "element_index": null, 
+  "verification_static_id": null,
+  "verification_selector": null, 
+  "parameters": {{ }},
+  "reasoning": "Checking if text is overflowing is best suited for a vision assisted llm verfication"
+}}
+```
 ```
 *Success Case (Radio Button Checked):*
 ```json
@@ -485,7 +516,7 @@ Now, generate the verification JSON for: "{verification_description}"
             assertion_type = verification_dict.get("assertion_type")
             params = verification_dict.get("parameters", {})
             needs_params = assertion_type in ['assert_text_equals', 'assert_text_contains', 'assert_attribute_equals', 'assert_element_count']
-            no_params_needed = assertion_type in ['assert_checked', 'assert_not_checked', 'assert_disabled', 'assert_enabled', 'assert_visible', 'assert_hidden']
+            no_params_needed = assertion_type in ['assert_checked', 'assert_not_checked', 'assert_disabled', 'assert_enabled', 'assert_visible', 'assert_hidden', 'assert_llm_verification']
 
 
 
@@ -578,7 +609,7 @@ Now, generate the verification JSON for: "{verification_description}"
                     assertion_type = verification_dict.get("assertion_type")
                     params = verification_dict.get("parameters", {})
                     needs_params = assertion_type in ['assert_text_equals', 'assert_text_contains', 'assert_attribute_equals', 'assert_element_count']
-                    no_params_needed = assertion_type in ['assert_checked', 'assert_not_checked', 'assert_enabled', 'assert_disabled', 'assert_visible', 'assert_hidden']
+                    no_params_needed = assertion_type in ['assert_checked', 'assert_not_checked', 'assert_enabled', 'assert_disabled', 'assert_visible', 'assert_hidden', 'assert_llm_verification']
 
                     if not verification_dict.get("verification_selector"):
                         logger.error("Internal Error: Verification marked passed but final selector is missing!")
@@ -627,7 +658,7 @@ Now, generate the verification JSON for: "{verification_description}"
         # --- Automated Mode ---
         if self.automated_mode:
             logger.info(f"[Auto Mode] Handling LLM Verification for: '{planned_desc}'")
-            logger.info(f"[Auto Mode] AI Result: {'PASSED' if is_verified else 'FAILED'}. Reasoning: {reasoning[:150]}...")
+            logger.info(f"[Auto Mode] AI Result: {'PASSED' if is_verified else 'FAILED'}. Reasoning: {reasoning}...")
 
             if is_verified:
                 final_selector = verification_result.get("verification_selector")
@@ -893,7 +924,7 @@ You are an AI Test Recorder Assistant helping recover from an unexpected state d
 - Encountered unexpected state/error: {reason}
 - Current URL: {current_url}
 
-**Current Page Context (Visible Interactive Elements with Indices):**
+**Current Page Context (Interactive Elements with Indices. You can interact with non visible elements as well):**
 ```html
 {dom_context_str}
 ```
@@ -1066,7 +1097,7 @@ You are an AI assistant helping a user record a web test. Your goal is to interp
 **Test Recording Progress:** Attempt {current_task['attempts']} of {self.task_manager.max_retries_per_subtask + 1} for this suggestion.
 
 **Input Context (Visible Interactive Elements with Indices):**
-This section shows visible interactive elements on the page, each marked with `[index]` and its pre-generated robust CSS selector.
+This section shows interactive elements on the page, each marked with `[index]` and its pre-generated robust CSS selector. You can also interact with the non visible elements
 ```html
 {dom_context_str}
 ```
@@ -1401,19 +1432,27 @@ Respond ONLY with the JSON object matching the schema.
             performed_action = exec_result["success"]
 
             if performed_action:
-                 # Record the successful step automatically
-                 record = {
+                # Record the successful step automatically
+                record = {
                     "step_id": self._current_step_id, "action": action, "description": planned_desc,
                     "parameters": {}, "selector": final_selector, "wait_after_secs": DEFAULT_WAIT_AFTER_ACTION
                  }
-                 if action == "type":
+                if action == "type":
                      # Include text, but no parameterization prompt
                      record["parameters"]["text"] = parameters.get("text", "")
-                 self.recorded_steps.append(record)
-                 self._current_step_id += 1
-                 logger.info(f"Step {record['step_id']} recorded (AI Suggestion - Automated): {action} on {final_selector}")
-                 self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "done", result=f"Recorded AI suggestion (automated) as step {record['step_id']}")
-                 return True # Success
+                elif action == "select":
+                    # Ensure 'option_label' from the suggestion's parameters is added
+                    if "option_label" in parameters:
+                        record["parameters"]["option_label"] = parameters["option_label"]
+                    if "option_value" in parameters: record["parameters"]["option_value"] = parameters["option_value"]
+                    if "option_index" in parameters: record["parameters"]["option_index"] = parameters["option_index"]
+
+
+                self.recorded_steps.append(record)
+                self._current_step_id += 1
+                logger.info(f"Step {record['step_id']} recorded (AI Suggestion - Automated): {action} on {final_selector}")
+                self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "done", result=f"Recorded AI suggestion (automated) as step {record['step_id']}")
+                return True # Success
 
             else: # AI suggestion execution failed
                  logger.error(f"[Auto Mode] Execution FAILED using AI suggested selector: {exec_result['message']}")
@@ -1507,6 +1546,11 @@ Respond ONLY with the JSON object matching the schema.
                     record = { "step_id": self._current_step_id, "action": action, "description": planned_desc,
                                "parameters": {}, "selector": final_selector, "wait_after_secs": DEFAULT_WAIT_AFTER_ACTION }
                     if action == "type": record["parameters"]["text"] = parameters.get("text", "")
+                    elif action == "select":
+                        # Assume original parameters (like option_label) still apply for override
+                        if "option_label" in parameters:
+                            record["parameters"]["option_label"] = parameters["option_label"]
+
                     if parameter_name: record["parameters"]["parameter_name"] = parameter_name
                     self.recorded_steps.append(record)
                     self._current_step_id += 1
@@ -1547,6 +1591,10 @@ Respond ONLY with the JSON object matching the schema.
                     record = { "step_id": self._current_step_id, "action": action, "description": planned_desc,
                                "parameters": {}, "selector": final_selector, "wait_after_secs": DEFAULT_WAIT_AFTER_ACTION }
                     if action == "type": record["parameters"]["text"] = parameters.get("text", "")
+                    elif action == "select":
+                        if "option_label" in parameters:
+                            record["parameters"]["option_label"] = parameters["option_label"]
+
                     if parameter_name: record["parameters"]["parameter_name"] = parameter_name
                     self.recorded_steps.append(record)
                     self._current_step_id += 1
@@ -1619,7 +1667,7 @@ Respond ONLY with the JSON object matching the schema.
                 dom_context_str, _ = self._latest_dom_state.element_tree.generate_llm_context_string(context_purpose='verification')
             prompt = f"""
             Given the verification step: "{planned_desc}"
-            And the current visible interactive elements context (with indices):
+            And the current interactive elements context (with indices). You can interact with non visible elements in the tree too:
             ```html
             {dom_context_str}
             ```
@@ -1810,7 +1858,7 @@ Respond ONLY with the JSON object matching the schema.
                         'text_contains': "assert_text_contains", 'text_equals': "assert_text_equals",
                         'visible': "assert_visible", 'hidden': "assert_hidden",
                         'attribute_equals': "assert_attribute_equals", 'element_count': "assert_element_count",
-                        'checked': "assert_checked", 'not_checked': "assert_not_checked", "disabled": "assert_disabled", "enabled": "assert_enabled"
+                        'checked': "assert_checked", 'not_checked': "assert_not_checked", "disabled": "assert_disabled", "enabled": "assert_enabled", "vision_llm": "assert_llm_verification"
                     }
                     assertion_action = action_map.get(type_suffix)
                     if not assertion_action:
