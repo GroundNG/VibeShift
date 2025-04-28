@@ -169,7 +169,6 @@ class WebAgent:
 
     def _get_history_summary(self) -> str:
         """Provides a concise summary of the recent history for the LLM."""
-        # (Implementation remains the same as before)
         if not self.history: return "No history yet."
         summary = "Recent History (Oldest First):\n"
         for entry in self.history:
@@ -180,7 +179,6 @@ class WebAgent:
 
     def _clean_llm_response_to_json(self, llm_output: str) -> Optional[Dict[str, Any]]:
         """Attempts to extract and parse JSON from the LLM's output."""
-        # (Implementation remains the same as before)
         logger.debug(f"[LLM PARSE] Attempting to parse LLM response (length: {len(llm_output)}).")
         match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", llm_output, re.DOTALL | re.IGNORECASE)
         if match:
@@ -318,26 +316,14 @@ class WebAgent:
             self._add_to_history("Test Plan Failed", {"feature": feature_description, "raw_response": raw_response_for_history})
             raise ValueError("Failed to generate a valid test plan from the feature description.")
 
-    def _get_extracted_data_summary(self) -> str:
-        """Provides summary of extracted data (less critical for recorder, but kept for potential context)."""
-        # (Implementation remains the same)
-        if not self.extracted_data_history: return "No data extracted yet."
-        summary = "Recently Extracted Data (Context Only):\n"
-        start_index = max(0, len(self.extracted_data_history) - self.max_extracted_data_history)
-        for entry in reversed(self.extracted_data_history[start_index:]):
-             data_snippet = str(entry.get('data', ''))[:150] + "..." if len(str(entry.get('data', ''))) > 150 else str(entry.get('data', ''))
-             step_desc_snippet = entry.get('subtask_desc', 'N/A')[:50] + ('...' if len(entry.get('subtask_desc', 'N/A')) > 50 else '')
-             index_info = f"Index:[{entry.get('index', '?')}]"
-             selector_info = f" Sel:'{entry.get('selector', '')[:30]}...'" if entry.get('selector') else ""
-             summary += f"- Step {entry.get('subtask_index', '?')+1} ('{step_desc_snippet}'): {index_info}{selector_info} Type={entry.get('type')}, Data={data_snippet}\n"
-        return summary.strip()
 
     def _get_llm_verification(self,
                                verification_description: str,
                                current_url: str,
                                dom_context_str: str,
                                static_id_map: Dict[str, Any],
-                               screenshot_bytes: Optional[bytes] = None
+                               screenshot_bytes: Optional[bytes] = None,
+                               previous_error: Optional[str] = None 
                                ) -> Optional[Dict[str, Any]]:
         """
         Uses LLM's generate_json (potentially multimodal) to verify if a condition is met.
@@ -345,7 +331,9 @@ class WebAgent:
         """
                 
         logger.info(f"Requesting LLM verification (using generate_json) for: '{verification_description}'")
-
+        logger.info(f"""dom_context_str: 
+{dom_context_str}
+                    """)
         # --- Prompt Adjustment for generate_json ---
         prompt = f"""
 You are an AI Test Verification Assistant. Your task is to determine if a specific condition, **or its clear intent**, is met based on the current web page state and If the goal IS met, propose the **most robust and specific, deterministic assertion** possible to confirm this state.
@@ -353,6 +341,8 @@ You are an AI Test Verification Assistant. Your task is to determine if a specif
 **Overall Goal:** {self.feature_description}
 **Verification Step:** {verification_description}
 **Current URL:** {current_url}
+
+{f"\n**Previous Attempt Feedback:**\nA previous verification attempt for this step resulted in an error: {previous_error}\nPlease carefully re-evaluate the current state and suggest a correct and verifiable assertion, or indicate if the verification still fails.\n" if previous_error else ""}
 
 **Input Context (Visible Elements with Indices for Interactive ones):**
 This section shows visible elements on the page.
@@ -385,7 +375,7 @@ This section shows visible elements on the page.
             *   Use `assert_visible` / `assert_hidden` for visibility states.
             *   Use `assert_disabled` / `assert_enabled` for checking disabled states
             *   Use `assert_attribute_equals` ONLY for comparing the *string value* of an attribute (e.g., `class="active"`, `value="Completed"`). **DO NOT use it for boolean attributes like `checked`, `disabled`, `selected`. Use state assertions instead.**
-            *   Use `assert_element_count` for counting elements matching a selector.
+            *   Use `assert_element_count` for counting elements matching a selector. **Note that you can't count child elements by using static id of parent elements. You need to use the selector for the elements you need to count**
         *   **`parameters` (Optional):** Provide necessary parameters ONLY if the chosen `assertion_type` requires them (e.g., `assert_text_equals` needs `expected_text`). For `assert_checked`, `assert_not_checked`, `assert_visible`, `assert_hidden`, `assert_disabled`, `assert_enabled`, parameters should generally be empty (`{{}}`) or omitted. Ensure parameters reflect the *actual observed state* (e.g., observed text).
     *   **Guidance for Robustness:**
             *   **Prefer specific checks:** `assert_text_contains` on a specific message is better than just `assert_visible` on a generic container *if* the text confirms the verification goal.
@@ -498,6 +488,9 @@ This section shows visible elements on the page.
 
 Now, generate the verification JSON for: "{verification_description}"
 """
+        if previous_error:
+            err = f"\n**Previous Attempt Feedback:**\nA previous verification attempt for this step resulted in an error: {previous_error}\nPlease carefully re-evaluate the current state and suggest a correct and verifiable assertion, or indicate if the verification still fails.\n" if previous_error else ""
+            logger.critical(err)
 
         # Call generate_json, passing image_bytes if available
         logger.debug("[LLM VERIFY] Sending prompt (and potentially image) to generate_json...")
@@ -521,8 +514,8 @@ Now, generate the verification JSON for: "{verification_description}"
 
 
             # --- Post-hoc Validation ---
-            is_verified = verification_dict.get("verified")
-            if is_verified is None:
+            is_verified_by_llm = verification_dict.get("verified")
+            if is_verified_by_llm is None:
                 logger.error("[LLM VERIFY FAILED] Parsed JSON missing required 'verified' field.")
                 self._add_to_history("LLM Verification Error", {"reason": "Missing 'verified' field", "parsed_dict": verification_dict})
                 return None
@@ -534,7 +527,7 @@ Now, generate the verification JSON for: "{verification_description}"
 
             # --- Selector Generation Logic ---
             final_selector = None # Initialize selector to be potentially generated
-            if is_verified:
+            if is_verified_by_llm:
                 static_id = verification_dict.get("verification_static_id")
                 interactive_index = verification_dict.get("element_index") # Keep original name from schema
 
@@ -599,7 +592,7 @@ Now, generate the verification JSON for: "{verification_description}"
                 else:
                     # Verified = true, but LLM provided neither static ID nor interactive index
                     logger.error("LLM verification PASSED but provided neither static ID nor interactive index!")
-                    # verification_dict["verified"] = False # llm verified na then don't communicate wrong to coder. TODO in executor to verify this using llm everytime. (Also can implement self healing using this)
+                    # verification_dict["verified"] = False 
                     verification_dict["reasoning"] = "Verified to be true by using vision LLMs"
                     verification_dict.pop("assertion_type", None)
                     verification_dict.pop("parameters", None)
@@ -613,7 +606,7 @@ Now, generate the verification JSON for: "{verification_description}"
 
                     if not verification_dict.get("verification_selector"):
                         logger.error("Internal Error: Verification marked passed but final selector is missing!")
-                        # verification_dict["verified"] = False # llm verified na then don't communicate wrong to coder. TODO in executor to verify this using llm everytime
+                        # verification_dict["verified"] = False 
                         verification_dict["reasoning"] = "Verified to be true by using vision LLMs"
 
                     elif needs_params and not params:
@@ -650,22 +643,57 @@ Now, generate the verification JSON for: "{verification_description}"
         Returns True if handled (recorded/skipped), False if aborted.
         """
         planned_desc = planned_step["description"]
-        is_verified = verification_result['verified']
+        is_verified_by_llm = verification_result['verified']
         reasoning = verification_result.get('reasoning', 'N/A')
         step_handled = False # Flag to track if a decision was made
         parameter_name = None
 
-        # --- Automated Mode ---
-        if self.automated_mode:
-            logger.info(f"[Auto Mode] Handling LLM Verification for: '{planned_desc}'")
-            logger.info(f"[Auto Mode] AI Result: {'PASSED' if is_verified else 'FAILED'}. Reasoning: {reasoning}...")
+        if is_verified_by_llm:
+            final_selector = verification_result.get("verification_selector")
+            assertion_type = verification_result.get("assertion_type")
+            parameters = verification_result.get("parameters", {})
+            interactive_index = verification_result.get("element_index") # Optional index hint
+            static_id = verification_result.get("_static_id_used") # Optional static ID hint
 
-            if is_verified:
-                final_selector = verification_result.get("verification_selector")
-                assertion_type = verification_result.get("assertion_type")
-                parameters = verification_result.get("parameters", {})
-                interactive_index = verification_result.get("element_index") # Optional index hint
-                static_id = verification_result.get("_static_id_used") # Optional static ID hint
+            # --- Perform Quick Validation using Playwright ---
+            validation_passed = False
+            validation_error = "Validation prerequisites not met (missing type/selector, unless assert_llm_verification)."
+
+            # Only validate if type and selector are present (or if type is assert_llm_verification)
+            if assertion_type and (final_selector or assertion_type == 'assert_llm_verification' or assertion_type == 'assert_passed_verification'):
+                logger.info("Performing quick Playwright validation of LLM's suggested assertion...")
+                validation_passed, validation_error = self.browser_controller.validate_assertion(
+                    assertion_type, final_selector, parameters
+                )
+            elif not assertion_type:
+                validation_passed = True
+                assertion_type = "assert_llm_verification"
+                # NOTE THAT THIS IS CURRENTLY TREATED AS VERIFIED BY VISION LLM
+            # (selector check is handled inside validate_assertion)
+
+            if not validation_passed:
+                # --- Validation FAILED ---
+                logger.warning(f"LLM assertion validation FAILED for step '{planned_desc}': {validation_error}")
+                error_message_for_task = f"LLM assertion validation failed: {validation_error}. Original AI reasoning: {reasoning}"
+                # Mark task as failed so the main loop can handle retry/re-planning, passing the validation error
+                self.task_manager.update_subtask_status(
+                    self.task_manager.current_subtask_index,
+                    "failed",
+                    error=error_message_for_task,
+                    force_update=True # Ensure status changes
+                )
+                # No UI shown here, let main loop retry and pass error back to _get_llm_verification
+                return True # Indicate step was handled (by failing validation)
+
+            # --- Validation PASSED ---
+            logger.info("LLM assertion validation PASSED.")
+            # Proceed with highlighting, panel display (interactive), or direct recording (automated)
+
+            # --- Automated Mode (Validated Success) ---
+            if self.automated_mode:
+                logger.info(f"[Auto Mode] Handling Validated LLM Verification for: '{planned_desc}'")
+                logger.info(f"[Auto Mode] AI Result: PASSED. Validated Assertion: {assertion_type} on {final_selector}")
+
                 highlight_color = "#008000" if static_id else "#0000FF" # Green for static, Blue for interactive/direct
                 highlight_text = "Verify Target (Static)" if static_id else "Verify Target"
                 highlight_idx_display = 0 if static_id else (interactive_index if interactive_index is not None else 0)
@@ -676,37 +704,19 @@ Now, generate the verification JSON for: "{verification_description}"
                     target_node_xpath = None
                     target_node = None
                     if static_id and hasattr(self, '_last_static_id_map') and self._last_static_id_map:
-                         target_node = self._last_static_id_map.get(static_id)
+                        target_node = self._last_static_id_map.get(static_id)
                     elif interactive_index is not None and self._latest_dom_state and self._latest_dom_state.selector_map:
-                         target_node = self._latest_dom_state.selector_map.get(interactive_index)
+                        target_node = self._latest_dom_state.selector_map.get(interactive_index)
 
                     if target_node: target_node_xpath = target_node.xpath
 
                     self.browser_controller.highlight_element(final_selector, highlight_idx_display, color=highlight_color, text=highlight_text, node_xpath=target_node_xpath)
-                
                 except Exception as hl_err:
                     logger.warning(f"Could not highlight verification target '{final_selector}': {hl_err}")
                     print(f"AI suggests assertion on element: {final_selector} (Highlight failed)")
 
-                if not final_selector or not assertion_type:
-                    logger.error("[Auto Mode] AI verification PASSED but missing required selector/assertion_type. Marking step as passed for now.")
-                    self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "done", result="Done (Inconsistent AI verification data: missing selector/type)")
-                    record = {
-                        "step_id": self._current_step_id,
-                        "action": "assert_passed_verification", # TODO handle this in executor
-                        "description": planned_desc,
-                        "parameters": parameters,
-                        "selector": final_selector,
-                        "reasoning": reasoning,
-                        "wait_after_secs": 0
-                    }
-                    self.recorded_steps.append(record)
-                    self._current_step_id += 1
-                    step_handled = True
-                    return True # Skip
-
-                # Record the verified assertion automatically
-                logger.info(f"[Auto Mode] Recording verified assertion: {assertion_type} on {final_selector}")
+                # Record the validated assertion automatically
+                logger.info(f"[Auto Mode] Recording validated assertion: {assertion_type} on {final_selector}")
                 record = {
                     "step_id": self._current_step_id,
                     "action": assertion_type,
@@ -717,157 +727,135 @@ Now, generate the verification JSON for: "{verification_description}"
                 }
                 self.recorded_steps.append(record)
                 self._current_step_id += 1
-                logger.info(f"Step {record['step_id']} recorded (AI Verified - Automated)")
-                self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "done", result=f"Recorded AI-verified assertion (automated) as step {record['step_id']}")
+                logger.info(f"Step {record['step_id']} recorded (AI Verified & Validated - Automated)")
+                self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "done", result=f"Recorded validated AI assertion (automated) as step {record['step_id']}")
                 step_handled = True
+                self.browser_controller.clear_highlights() # Clear highlights even in auto mode
+                return True # Indicate handled
 
-            else: # Verification failed according to LLM
-                # --- Verification FAILED according to LLM ---
-                logger.warning(f"[Auto Mode] AI verification FAILED for '{planned_desc}'. Recording failure.")
-                # 1. Record a "failed verification" step
-                failed_record = {
-                    "step_id": self._current_step_id,
-                    "action": "assert_failed_verification", # Use a specific action type
-                    "description": planned_desc,
-                    "parameters": {
-                        "reasoning": reasoning # Include AI's reason for failure
-                    },
-                    "selector": None, # No specific selector applies to the failure itself
-                    "wait_after_secs": 0
-                }
-                self.recorded_steps.append(failed_record)
-                self._current_step_id += 1
-                logger.info(f"Step {failed_record['step_id']} recorded (AI Verification FAILED - Automated)")
-                
-                # 2. Mark the planned step in TaskManager as 'failed'
-                #    Use force_update=True if necessary, depending on TaskManager logic
-                self.task_manager.update_subtask_status(
-                    self.task_manager.current_subtask_index,
-                    "skipped", # Mark as skipped
-                    error=f"AI verification failed: {reasoning}",
-                    force_update=True # Ensure status changes even if retries were possible
-                )
-                step_handled = True # The step *was* handled by recording the failure
-
-            self.browser_controller.clear_highlights() # Clear highlights even in auto mode
-            return True # Indicate handled (recorded success OR recorded failure), loop continues but TaskManager reflects state
-
-        # --- Interactive Mode ---
-        else:
-            print("\n" + "="*60)
-            print(f"Planned Step: {planned_desc}")
-            print(f"Review AI Verification Result in Panel...")
-             # Highlight element if verification passed and selector exists
-            if is_verified and verification_result.get("verification_selector"):
-                final_selector = verification_result.get("verification_selector")
-                interactive_index = verification_result.get("element_index") # Optional index hint
-                static_id = verification_result.get("_static_id_used") # Optional static ID hint
+            # --- Interactive Mode (Validated Success) ---
+            else:
+                print("\n" + "="*60)
+                print(f"Planned Step: {planned_desc}")
+                print(f"Review AI Verification Result (Validated) in Panel...")
+                # Highlight element
+                final_selector = verification_result.get("verification_selector") # Re-fetch just in case
+                interactive_index = verification_result.get("element_index")
+                static_id = verification_result.get("_static_id_used")
                 highlight_color = "#008000" if static_id else "#0000FF" # Green for static, Blue for interactive/direct
                 highlight_text = "Verify Target (Static)" if static_id else "Verify Target"
                 highlight_idx_display = 0 if static_id else (interactive_index if interactive_index is not None else 0)
 
                 self.browser_controller.clear_highlights()
                 try:
-                    # Find node XPath if possible for better highlighting fallback
                     target_node_xpath = None
                     target_node = None
                     if static_id and hasattr(self, '_last_static_id_map') and self._last_static_id_map:
-                         target_node = self._last_static_id_map.get(static_id)
+                        target_node = self._last_static_id_map.get(static_id)
                     elif interactive_index is not None and self._latest_dom_state and self._latest_dom_state.selector_map:
-                         target_node = self._latest_dom_state.selector_map.get(interactive_index)
+                        target_node = self._latest_dom_state.selector_map.get(interactive_index)
 
                     if target_node: target_node_xpath = target_node.xpath
 
                     self.browser_controller.highlight_element(final_selector, highlight_idx_display, color=highlight_color, text=highlight_text, node_xpath=target_node_xpath)
-                    print(f"AI suggests assertion on element: {final_selector}")
+                    print(f"AI suggests assertion on element (Validation PASSED): {final_selector}")
                 except Exception as hl_err:
                     logger.warning(f"Could not highlight verification target '{final_selector}': {hl_err}")
-                    print(f"AI suggests assertion on element: {final_selector} (Highlight failed)")
-            else:
-                 self.browser_controller.clear_highlights() # Clear previous highlights even if failed
-                 print(f"AI Verification Result: {'PASSED (but no selector?)' if is_verified else 'FAILED'}")
+                    print(f"AI suggests assertion on element (Validation PASSED): {final_selector} (Highlight failed)")
 
+                print("="*60)
 
-            print("="*60)
+                # Show the review panel (button should be enabled now)
+                self.browser_controller.show_verification_review_panel(planned_desc, verification_result)
 
-            # Show the review panel
-            self.browser_controller.show_verification_review_panel(planned_desc, verification_result)
+                # Wait for user choice from panel
+                user_choice = self.browser_controller.wait_for_panel_interaction(30.0) # Give more time for review
+                if not user_choice: user_choice = 'skip' # Default to skip on timeout
 
-            # Wait for user choice from panel
-            user_choice = self.browser_controller.wait_for_panel_interaction(30.0) # Give more time for review
-            if not user_choice: user_choice = 'skip' # Default to skip on timeout
+                # --- Process User Choice (Interactive) ---
+                if user_choice == 'record_ai':
+                    # Record validated assertion
+                    final_selector = verification_result.get("verification_selector")
+                    assertion_type = verification_result.get("assertion_type")
+                    parameters = verification_result.get("parameters", {})
+                    print(f"Recording validated AI assertion: {assertion_type} on {final_selector}")
+                    record = { "step_id": self._current_step_id, "action": assertion_type, "description": planned_desc,
+                            "parameters": parameters, "selector": final_selector, "wait_after_secs": 0 }
+                    self.recorded_steps.append(record)
+                    self._current_step_id += 1
+                    logger.info(f"Step {record['step_id']} recorded (AI Verified & Validated)")
+                    self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "done", result=f"Recorded validated AI assertion as step {record['step_id']}")
+                    step_handled = True
 
-            # --- Process User Choice ---
-            if user_choice == 'record_ai':
-                # Should only be possible if button wasn't disabled (i.e., is_verified and selector/type exist)
-                final_selector = verification_result.get("verification_selector")
-                assertion_type = verification_result.get("assertion_type")
-                parameters = verification_result.get("parameters", {})
+                elif user_choice == 'define_manual':
+                    print("Switching to manual assertion definition...")
+                    self.browser_controller.hide_recorder_panel() # Hide review panel
+                    # Call the existing manual handler
+                    if not self._handle_assertion_recording(planned_step):
+                        self._user_abort_recording = True # Propagate abort signal
+                    step_handled = True # Manual path handles the step
 
-                if not final_selector or not assertion_type:
-                     print("Error: Cannot record - essential info missing from AI result. Please use Manual or Skip.")
-                     # No state change, user needs to click again
-                     self.browser_controller.hide_recorder_panel() # Hide briefly
-                     return True # Return handled, but loop will continue in agent
+                elif user_choice == 'skip':
+                    print("Skipping verification step.")
+                    self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "skipped", result="User skipped AI verification via panel")
+                    step_handled = True
 
-                print(f"Recording AI-verified assertion: {assertion_type} on {final_selector}")
+                elif user_choice == 'abort':
+                    print("Aborting recording.")
+                    self._user_abort_recording = True
+                    step_handled = False # Abort signal
 
-                # --- Ask for Parameterization (only if needed, similar to action step) ---
-                # Example: if assertion_type requires text and we want to allow parameterization
-                # This is less common for assertions, but possible
-                # For simplicity, we'll skip parameterization prompting for assertions for now.
-                # parameter_name = None # Reset
-                # if assertion_type == "assert_text_equals" and parameters.get("expected_text"):
-                #     param_text = parameters.get("expected_text", "")
-                #     if self.browser_controller.prompt_parameterization_in_panel(param_text):
-                #          print(f"Parameterize '{param_text[:30]}...'? Enter name in panel...")
-                #          param_choice = self.browser_controller.wait_for_panel_interaction(15.0)
-                #          if param_choice == 'parameterized':
-                #              parameter_name = self.browser_controller.get_parameterization_result()
-                #              print(f"Parameter name set to: '{parameter_name}'")
-                #          else: print("Parameterization skipped.")
-                #     else: print("Could not show param UI.")
+                else: # Includes timeout, None, unexpected values
+                    print("Invalid choice or timeout during verification review. Skipping step.")
+                    self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "skipped", result="Invalid choice/timeout on AI verification")
+                    step_handled = True
 
-                # --- Record the Assertion Step ---
-                record = { "step_id": self._current_step_id, "action": assertion_type, "description": planned_desc,
-                           "parameters": parameters, "selector": final_selector, "wait_after_secs": 0 }
-                # if parameter_name: record["parameters"]["parameter_name"] = parameter_name # Add if implemented
+                # --- Cleanup UI ---
+                self.browser_controller.clear_highlights()
+                self.browser_controller.hide_recorder_panel()
 
-                self.recorded_steps.append(record)
+                return step_handled and not self._user_abort_recording
+
+        else: # --- LLM verification FAILED initially ---
+            logger.warning(f"[Verification] AI verification FAILED for '{planned_desc}'. Reasoning: {reasoning}")
+            # Mode-dependent handling
+            if self.automated_mode:
+                logger.warning("[Auto Mode] Recording AI verification failure.")
+                failed_record = {
+                    "step_id": self._current_step_id,
+                    "action": "assert_failed_verification", # Specific action type
+                    "description": planned_desc,
+                    "parameters": {"reasoning": reasoning},
+                    "selector": None, "wait_after_secs": 0
+                }
+                self.recorded_steps.append(failed_record)
                 self._current_step_id += 1
-                logger.info(f"Step {record['step_id']} recorded (AI Verified): {assertion_type} on {final_selector}")
-                self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "done", result=f"Recorded AI-verified assertion as step {record['step_id']}")
+                logger.info(f"Step {failed_record['step_id']} recorded (AI Verification FAILED - Automated)")
+                # Mark as skipped so test continues, but failure is noted in recorded steps
+                self.task_manager.update_subtask_status(
+                    self.task_manager.current_subtask_index,
+                    "skipped", # Mark as skipped
+                    result=f"AI verification failed: {reasoning}. Recorded as failed assertion.",
+                    force_update=True
+                )
                 step_handled = True
 
-            elif user_choice == 'define_manual':
-                print("Switching to manual assertion definition...")
-                self.browser_controller.hide_recorder_panel() # Hide review panel
-                # Call the existing manual handler - it will show its own panels
-                # _handle_assertion_recording returns True if handled (recorded/skipped), False if aborted
+            else: # Interactive Mode - Fallback to Manual
+                print("\n" + "="*60)
+                print(f"Planned Step: {planned_desc}")
+                print(f"AI Verification Result: FAILED (Reason: {reasoning})")
+                print("Falling back to manual assertion definition...")
+                print("="*60)
+                self.browser_controller.clear_highlights()
+                self.browser_controller.hide_recorder_panel() # Ensure review panel isn't shown
+                # Call the existing manual handler
                 if not self._handle_assertion_recording(planned_step):
-                    self._user_abort_recording = True # Propagate abort signal
+                    self._user_abort_recording = True # Propagate abort
                 step_handled = True # Manual path handles the step
 
-            elif user_choice == 'skip':
-                print("Skipping verification step.")
-                self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "skipped", result="User skipped AI verification via panel")
-                step_handled = True
-
-            elif user_choice == 'abort':
-                print("Aborting recording.")
-                self._user_abort_recording = True
-                step_handled = False # Abort signal
-
-            else: # Includes timeout, None, unexpected values
-                print("Invalid choice or timeout during verification review. Skipping step.")
-                self.task_manager.update_subtask_status(self.task_manager.current_subtask_index, "skipped", result="Invalid choice/timeout on AI verification")
-                step_handled = True
-
-            # --- Cleanup UI ---
-            self.browser_controller.clear_highlights()
-            self.browser_controller.hide_recorder_panel()
-
             return step_handled and not self._user_abort_recording
+
+
 
     def _trigger_re_planning(self, current_planned_task: Dict[str, Any], reason: str) -> bool:
         """
@@ -2118,20 +2106,26 @@ Respond ONLY with the JSON object matching the schema.
 
                 # --- 1. Verification Step ---
                 if planned_step_desc_lower.startswith(("verify", "assert")):
+                    previous_error = current_planned_task.get("error") # Get validation error from last attempt
                     logger.info("Handling verification step using LLM...")
                     verification_result = self._get_llm_verification(
                         verification_description=current_planned_task['description'],
                         current_url=current_url,
                         dom_context_str=dom_context_str,
                         static_id_map=static_id_map,
-                        screenshot_bytes=screenshot_bytes
+                        screenshot_bytes=screenshot_bytes,
+                        previous_error=previous_error
                     )
                     if verification_result:
                         # Handle user confirmation & recording based on LLM result
-                        if not self._handle_llm_verification(current_planned_task, verification_result):
-                             self._user_abort_recording = True # Abort only possible in interactive
+                        handled_ok = self._handle_llm_verification(current_planned_task, verification_result)
+                        if not handled_ok and self._user_abort_recording:
+                            logger.warning("User aborted during verification handling.")
+                            break 
                     else:
                         # LLM verification failed, fallback to manual
+                        failure_reason = "LLM call/parse failed for verification."
+                        logger.error(f"[Verification] {failure_reason}")
                         if self.automated_mode:
                             logger.error("[Auto Mode] LLM verification call failed. Skipping step.")
                             self.task_manager.update_subtask_status(current_task_index, "skipped", result="Skipped (LLM verification failed)")

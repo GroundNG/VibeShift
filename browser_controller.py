@@ -1,11 +1,11 @@
 # browser_controller.py
-from playwright.sync_api import sync_playwright, Page, Browser, Playwright, TimeoutError as PlaywrightTimeoutError, Error as PlaywrightError, Locator, ConsoleMessage
+from playwright.sync_api import sync_playwright, Page, Browser, Playwright, TimeoutError as PlaywrightTimeoutError, Error as PlaywrightError, Locator, ConsoleMessage, expect
 import logging
 import time
 import random
 import json
 import os
-from typing import Optional, Any, Dict, List, Callable
+from typing import Optional, Any, Dict, List, Callable, Tuple
 import threading
 
 from dom.service import DomService
@@ -1101,7 +1101,98 @@ class BrowserController:
             self.console_messages = [] # Clear messages on final close
             self._recorder_ui_injected = False
 
+    def validate_assertion(self, assertion_type: str, selector: str, params: Dict[str, Any], timeout_ms: int = 3000) -> Tuple[bool, Optional[str]]:
+        """
+        Performs a quick Playwright check to validate a proposed assertion. 
 
+        Args:
+            assertion_type: The type of assertion (e.g., 'assert_visible').
+            selector: The CSS selector for the target element.
+            params: Dictionary of parameters for the assertion (e.g., expected_text).
+            timeout_ms: Short timeout for the validation check.
+
+        Returns:
+            Tuple (bool, Optional[str]): (True, None) if validation passes,
+                                         (False, error_message) if validation fails.
+        """
+        if not self.page:
+            return False, "Page not initialized."
+        if not selector:
+            # Assertions like 'assert_llm_verification' might not have a selector
+            if assertion_type == 'assert_llm_verification':
+                logger.info("Skipping validation for 'assert_llm_verification' as it relies on external LLM check.")
+                return True, None
+            return False, "Selector is required for validation."
+        if not assertion_type:
+            return False, "Assertion type is required for validation."
+
+        logger.info(f"Validating assertion: {assertion_type} on '{selector}' with params {params} (timeout: {timeout_ms}ms)")
+        try:
+            locator = self._get_locator(selector) # Use helper to handle xpath/css
+
+            # Use Playwright's expect() for efficient checks
+            if assertion_type == 'assert_visible':
+                expect(locator).to_be_visible(timeout=timeout_ms)
+            elif assertion_type == 'assert_hidden':
+                expect(locator).to_be_hidden(timeout=timeout_ms)
+            elif assertion_type == 'assert_text_equals':
+                expected_text = params.get('expected_text')
+                if expected_text is None: return False, "Missing 'expected_text' parameter for assert_text_equals"
+                expect(locator).to_have_text(expected_text, timeout=timeout_ms)
+            elif assertion_type == 'assert_text_contains':
+                expected_text = params.get('expected_text')
+                if expected_text is None: return False, "Missing 'expected_text' parameter for assert_text_contains"
+                expect(locator).to_contain_text(expected_text, timeout=timeout_ms)
+            elif assertion_type == 'assert_attribute_equals':
+                attr_name = params.get('attribute_name')
+                expected_value = params.get('expected_value')
+                if not attr_name: return False, "Missing 'attribute_name' parameter"
+                # Note: Playwright's to_have_attribute handles presence and value check
+                expect(locator).to_have_attribute(attr_name, expected_value if expected_value is not None else "", timeout=timeout_ms) # Check empty string if value is None/missing? Or require value? Let's require non-None value.
+                # if expected_value is None: return False, "Missing 'expected_value' parameter" # Stricter check
+                # expect(locator).to_have_attribute(attr_name, expected_value, timeout=timeout_ms)
+            elif assertion_type == 'assert_element_count':
+                expected_count = params.get('expected_count')
+                if expected_count is None: return False, "Missing 'expected_count' parameter"
+                # Re-evaluate locator to get all matches for count
+                all_matches_locator = self.page.locator(selector)
+                expect(all_matches_locator).to_have_count(expected_count, timeout=timeout_ms)
+            elif assertion_type == 'assert_checked':
+                expect(locator).to_be_checked(timeout=timeout_ms)
+            elif assertion_type == 'assert_not_checked':
+                 # Use expect(...).not_to_be_checked()
+                 expect(locator).not_to_be_checked(timeout=timeout_ms)
+            elif assertion_type == 'assert_enabled':
+                 expect(locator).to_be_enabled(timeout=timeout_ms)
+            elif assertion_type == 'assert_disabled':
+                 expect(locator).to_be_disabled(timeout=timeout_ms)
+            elif assertion_type == 'assert_llm_verification':
+                 logger.info("Skipping Playwright validation for 'assert_llm_verification'.")
+                 # This assertion type is validated externally by the LLM during execution.
+                 pass # Treat as passed for this quick check
+            else:
+                return False, f"Unsupported assertion type for validation: {assertion_type}"
+
+            # If no exception was raised by expect()
+            logger.info(f"Validation successful for {assertion_type} on '{selector}'.")
+            return True, None
+
+        except PlaywrightTimeoutError as e:
+            err_msg = f"Validation failed for {assertion_type} on '{selector}': Timeout ({timeout_ms}ms) - {str(e).splitlines()[0]}"
+            logger.warning(err_msg)
+            return False, err_msg
+        except AssertionError as e: # Catch expect() assertion failures
+            err_msg = f"Validation failed for {assertion_type} on '{selector}': Condition not met - {str(e).splitlines()[0]}"
+            logger.warning(err_msg)
+            return False, err_msg
+        except PlaywrightError as e:
+            err_msg = f"Validation failed for {assertion_type} on '{selector}': PlaywrightError - {str(e).splitlines()[0]}"
+            logger.warning(err_msg)
+            return False, err_msg
+        except Exception as e:
+            err_msg = f"Unexpected error during validation for {assertion_type} on '{selector}': {type(e).__name__} - {e}"
+            logger.error(err_msg, exc_info=True)
+            return False, err_msg
 
     def get_structured_dom(self, highlight_all_clickable_elements: bool = True, viewport_expansion: int = 0) -> Optional[DOMState]:
         """
