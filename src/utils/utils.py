@@ -10,13 +10,21 @@ def load_api_key():
         raise ValueError("LLM_API_KEY not found in .env file or environment variables.")
     return api_key
 
-def load_base_url():
+def load_api_base_url():
     """Loads the API base url from .env file."""
     load_dotenv()
     base_url = os.getenv("LLM_BASE_URL")
     if not base_url:
         raise ValueError("LLM_BASE_URL not found in .env file or environment variables.")
     return base_url
+
+def load_api_version():
+    """Loads the API Version from .env file."""
+    load_dotenv()
+    api_version = os.getenv("LLM_API_VERSION")
+    if not api_version:
+        raise ValueError("LLM_API_VERSION not found in .env file or environment variables.")
+    return api_version
 
 def load_llm_model():
     """Loads the llm model from .env file."""

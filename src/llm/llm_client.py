@@ -12,7 +12,7 @@ import json
 # --- Provider Specific Imports ---
 try:
     import openai
-    from openai import OpenAI
+    from openai import AzureOpenAI
     from pydantic import BaseModel # Needed for LLM JSON tool definition
     OPENAI_SDK = True
 except ImportError:
@@ -100,15 +100,17 @@ class LLMClient:
                 logger.error(f"Failed to initialize Google Gemini Client: {e}", exc_info=True)
                 raise RuntimeError(f"Gemini client initialization failed: {e}")
 
-        elif self.provider == 'LLM':
+        elif self.provider == 'llm':
             if not OPENAI_SDK:
                  raise ImportError("LLM OpenAI libraries (openai, pydantic) are not installed. Please install them.")
             if not all([LLM_api_key, LLM_endpoint, LLM_api_version, LLM_model_name]):
                 raise ValueError("LLM_api_key, LLM_endpoint, LLM_api_version, and LLM_model_name are required for provider 'LLM'")
             try:
-                self.client = OpenAI(
+                self.client = AzureOpenAI(
                     api_key=LLM_api_key,
-                    base_url=LLM_endpoint
+                    # base_url=LLM_endpoint,
+                    azure_endpoint=LLM_endpoint,
+                    api_version=LLM_api_version
                 )
                 # Test connection slightly by listing models (optional, requires different permission potentially)
                 # self.client.models.list()
@@ -470,7 +472,7 @@ class LLMClient:
           self._wait_for_rate_limit() # Wait before making the API call
           if self.provider == 'gemini':
                return self._generate_text_gemini(prompt)
-          elif self.provider == 'LLM':
+          elif self.provider == 'llm':
                return self._generate_text_LLM(prompt)
           else:
                # Should not happen due to __init__ check, but as a fallback
@@ -483,7 +485,7 @@ class LLMClient:
           self._wait_for_rate_limit() # Wait before making the API call
           if self.provider == 'gemini':
                return self._generate_multimodal_gemini(prompt, image_bytes)
-          elif self.provider == 'LLM':
+          elif self.provider == 'llm':
                return self._generate_multimodal_LLM(prompt, image_bytes)
           else:
                logger.error(f"generate_multimodal called with unsupported provider '{self.provider}'")
@@ -505,7 +507,7 @@ class LLMClient:
           if self.provider == 'gemini':
                # Assuming Gemini needs a type directly (like Pydantic or dataclass)
                return self._generate_json_gemini(Schema_Class, prompt, image_bytes)
-          elif self.provider == 'LLM':
+          elif self.provider == 'llm':
                if not OPENAI_SDK or not issubclass(Schema_Class, BaseModel):
                     err_msg = "Error: [LLM] Pydantic BaseModel schema required for LLM JSON generation."
                     if not OPENAI_SDK:

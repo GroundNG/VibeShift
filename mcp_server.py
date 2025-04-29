@@ -19,7 +19,7 @@ from src.agents.recorder_agent import WebAgent # Needs refactoring for non-inter
 from src.agents.crawler_agent import CrawlerAgent
 from src.llm.llm_client import LLMClient
 from src.execution.executor import TestExecutor
-from src.utils.utils import load_api_key
+from src.utils.utils import load_api_key, load_api_base_url, load_api_version, load_llm_model
 
 # Configure logging for the MCP server
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - [MCP Server] %(message)s')
@@ -90,13 +90,15 @@ async def record_test_flow(feature_description: str, project_directory: str, hea
 
 # --- MCP Tool: Run a Single Regression Test ---
 @mcp.tool()
-async def run_regression_test(test_file_path: str, headless: bool = True) -> Dict[str, Any]:
+async def run_regression_test(test_file_path: str, headless: bool = True, enable_healing: bool = True, healing_mode: str = 'soft') -> Dict[str, Any]:
     """
     Runs a previously recorded test case from a JSON file. If a case fails, it could be either because your code has a problem, or could be you missed/wrong step in feature description
 
     Args:
         test_file_path: The relative or absolute path to the .json test file (e.g., 'output/test_login.json').
         headless: Run the browser in headless mode (no visible window). Defaults to True.
+        enable_healing: Whether to run this regression test with healing mode enabled. In healing mode, if test fails because of a changed or flaky selector, the agent can try to heal the test automatically.
+        healing_mode: can be 'soft' or 'hard'. In soft mode, only single step is attempted to heal. In hard healing, complete test is tried to be re-recorded
 
     Returns:
         A dictionary containing the execution result summary, including status (PASS/FAIL),
@@ -105,7 +107,13 @@ async def run_regression_test(test_file_path: str, headless: bool = True) -> Dic
     logger.info(f"Received request to run regression test: '{test_file_path}', Headless: {headless}")
 
     api_key = get_api_key()
-    llm_client = LLMClient(gemini_api_key=api_key, provider='gemini')
+    # llm_client = LLMClient(gemini_api_key=api_key, provider='gemini')
+    api_version = load_api_version();
+    api_model = load_llm_model();
+    api_base_url = load_api_base_url();
+    if api_version:
+        llm_client = LLMClient(provider='LLM', LLM_api_key=api_key, LLM_api_version=api_version, LLM_endpoint=api_base_url, LLM_model_name=api_model, LLM_vision_model_name=api_model)
+
     
     # Basic path validation (relative to server or absolute)
     if not os.path.isabs(test_file_path):
@@ -129,7 +137,12 @@ async def run_regression_test(test_file_path: str, headless: bool = True) -> Dic
 
     try:
         # Executor doesn't need the LLM client
-        executor = TestExecutor(headless=headless, llm_client=llm_client)
+        executor = TestExecutor(
+            headless=headless, 
+            llm_client=llm_client, 
+            enable_healing=enable_healing,
+            healing_mode=healing_mode
+            )
         logger.info(f"Delegating test execution for '{test_file_path}' to a separate thread...")
         test_result = await asyncio.to_thread(
             executor.run_test, # The function to run

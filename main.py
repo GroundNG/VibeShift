@@ -10,7 +10,7 @@ from src.agents.recorder_agent import WebAgent
 from src.agents.crawler_agent import CrawlerAgent
 from src.llm.llm_client import LLMClient
 from src.execution.executor import TestExecutor
-from src.utils.utils import load_api_key
+from src.utils.utils import load_api_key, load_api_version, load_api_base_url, load_llm_model
 import logging
 import warnings
 
@@ -58,13 +58,34 @@ if __name__ == "__main__":
         action='store_true', # Use action='store_true' for boolean flags
         help="Run recorder in automated mode (AI makes decisions without user prompts). Only applies to 'record' mode." # Clarified help text
     )
+    parser.add_argument(
+        '--enable-healing',
+        action='store_true',
+        help="Enable self-healing during execution ('execute' mode only)."
+    )
+    parser.add_argument(
+        '--healing-mode',
+        choices=['soft', 'hard'],
+        default='soft',
+        help="Self-healing mode: 'soft' (fix selector) or 'hard' (re-record) ('execute' mode only)."
+    )
+    parser.add_argument('--provider', choices=['gemini', 'LLM'], default='gemini', help="LLM provider (default: gemini).")
     args = parser.parse_args()
 
     # Validate arguments based on mode
-    if args.mode == 'execute' and not args.file:
-        parser.error("--file is required when --mode is 'execute'")
-    if args.mode == 'record' and args.file:
-        logger.warning("--file argument is ignored in 'record' mode.")
+    if args.mode == 'execute':
+        if not args.file:
+            parser.error("--file is required when --mode is 'execute'")
+        if not args.enable_healing and args.healing_mode != 'soft':
+             logger.warning("--healing-mode is ignored when --enable-healing is not set.")
+    elif args.mode == 'record':
+        if args.enable_healing:
+             logger.warning("--enable-healing and --healing-mode are ignored in 'record' mode.")
+    elif args.mode == 'discover':
+        if not args.url:
+             parser.error("--url is required when --mode is 'discover'")
+        if args.enable_healing:
+            logger.warning("--enable-healing and --healing-mode are ignored in 'discover' mode.")
     # --- End Argument Parser ---
 
 
@@ -153,12 +174,30 @@ if __name__ == "__main__":
 
         elif args.mode == 'execute':
             logger.info(f"Starting in EXECUTE mode for file: {args.file}")
-            llm_client = LLMClient(gemini_api_key=api_key, provider='gemini')
             HEADLESS_BROWSER = args.headless # Use flag for executor headless
-            print(f"Running in EXECUTE mode ({'Headless' if HEADLESS_BROWSER else 'Visible Browser'}).")
+            heal_msg = f"Self-Healing: {'ENABLED (' + args.healing_mode + ' mode)' if args.enable_healing else 'DISABLED'}"
+            print(f"Running in EXECUTE mode ({'Headless' if args.headless else 'Visible Browser'}). {heal_msg}")
+
+            
+            if args.provider == "LLM":
+                api_version = load_api_version();
+                api_model = load_llm_model();
+                api_base_url = load_api_base_url();
+                if api_version:
+                    llm_client = LLMClient(provider='LLM', LLM_api_key=api_key, LLM_api_version=api_version, LLM_endpoint=api_base_url, LLM_model_name=api_model, LLM_vision_model_name=api_model)
+                else: 
+                    llm_client = LLMClient(provider='LLM', LLM_api_key=api_key, LLM_endpoint=api_base_url, LLM_model_name=api_model, LLM_vision_model_name=api_model)
+            else:
+                llm_client = LLMClient(gemini_api_key=api_key, provider='gemini')
 
             # Executor doesn't need LLM client directly
-            executor = TestExecutor(headless=HEADLESS_BROWSER, llm_client=llm_client)
+            executor = TestExecutor(
+                llm_client=llm_client, # Pass the initialized client
+                headless=args.headless,
+                enable_healing=args.enable_healing,
+                healing_mode=args.healing_mode
+                # healing_retries can be added as arg if needed
+            )
             test_result = executor.run_test(args.file)
 
             # --- Display Test Execution Results ---
@@ -167,6 +206,26 @@ if __name__ == "__main__":
             print(f"Status: {test_result.get('status', 'UNKNOWN')}")
             print(f"Duration: {test_result.get('duration_seconds', 'N/A')} seconds")
             print(f"Message: {test_result.get('message', 'N/A')}")
+            print(f"Healing: {'ENABLED ('+test_result.get('healing_mode','N/A')+' mode)' if test_result.get('healing_enabled') else 'DISABLED'}")
+
+            # Display Healing Attempts Log
+            healing_attempts = test_result.get("healing_attempts", [])
+            if healing_attempts:
+                 print("\n--- Healing Attempts ---")
+                 for attempt in healing_attempts:
+                     outcome = "SUCCESS" if attempt.get('success') else "FAIL"
+                     mode = attempt.get('mode', 'N/A')
+                     print(f"- Step {attempt.get('step_id')}: Attempt {attempt.get('attempt')} ({mode} mode) - {outcome}")
+                     if outcome == "SUCCESS" and mode == "soft":
+                          print(f"  Old Selector: {attempt.get('failed_selector')}")
+                          print(f"  New Selector: {attempt.get('new_selector')}")
+                          print(f"  Reasoning: {attempt.get('reasoning', 'N/A')[:100]}...")
+                     elif outcome == "FAIL" and mode == "soft":
+                          print(f"  Failed Selector: {attempt.get('failed_selector')}")
+                          print(f"  Reasoning: {attempt.get('reasoning', 'N/A')[:100]}...")
+                     elif mode == "hard":
+                          print(f"  Triggered re-recording due to error: {attempt.get('error', 'N/A')[:100]}...")
+                 print("-" * 20)
 
             if test_result.get('status') == 'FAIL':
                  print("-" * 15 + " Failure Details " + "-" * 15)
@@ -174,12 +233,16 @@ if __name__ == "__main__":
                  print(f"Failed Step ID: {failed_step_info.get('step_id', 'N/A')}")
                  print(f"Failed Step Description: {failed_step_info.get('description', 'N/A')}")
                  print(f"Action: {failed_step_info.get('action', 'N/A')}")
-                 print(f"Selector Used: {failed_step_info.get('selector', 'N/A')}")
+                 # Show the *last* selector tried if healing was attempted
+                 last_selector_tried = failed_step_info.get('selector') # Default to original
+                 last_failed_healing_attempt = next((a for a in reversed(healing_attempts) if a.get('step_id') == failed_step_info.get('step_id') and not a.get('success')), None)
+                 if last_failed_healing_attempt:
+                      last_selector_tried = last_failed_healing_attempt.get('failed_selector')
+                 print(f"Selector Used (Last Attempt): {last_selector_tried or 'N/A'}")
                  print(f"Error: {test_result.get('error_details', 'N/A')}")
                  if test_result.get('screenshot_on_failure'):
                       print(f"Failure Screenshot: {test_result.get('screenshot_on_failure')}")
-
-                 # --- Display Console Errors/Warnings ---
+                 # (Console message display remains the same)
                  console_msgs = test_result.get("console_messages_on_failure", [])
                  if console_msgs:
                      print("\n--- Console Errors/Warnings (Recent): ---")
@@ -193,6 +256,10 @@ if __name__ == "__main__":
                      print("\n--- No relevant console errors/warnings captured on failure. ---")
             elif test_result.get('status') == 'PASS':
                  print(f"Steps Executed: {test_result.get('steps_executed', 'N/A')}")
+            elif test_result.get('status') == 'HEALING_TRIGGERED':
+                 print(f"\nNOTICE: Hard Healing (re-recording) was triggered.")
+                 print(f"The original execution stopped at Step {test_result.get('failed_step', {}).get('step_id', 'N/A')}.")
+                 print(f"Check logs for the status and output file of the re-recording process.")
 
 
             print("="*58)
