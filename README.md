@@ -18,14 +18,14 @@ This creates a tighter feedback loop, automating the testing process and allowin
 
 ## Features
 
-*   **MCP Integration:** Seamlessly integrates with AI coding assistants supporting MCP via FastMCP.
+*   **MCP Integration:** Seamlessly integrates with Cursor/Windsurf/Github Copilot/Roo Code
 *   **AI-Assisted Test Recording:** Generate Playwright-based test scripts from natural language descriptions (in automated mode).
 *   **Deterministic Test Execution:** Run recorded JSON test files reliably using Playwright.
 *   **AI-Powered Test Discovery:** Crawl websites and leverage any LLM (in openai compliant format) to suggest test steps for discovered pages.
 *   **Regression Testing:** Easily run existing test suites to catch regressions.
 *   **Automated Feedback Loop:** Execution results (including failures, screenshots, console logs) are returned, providing direct feedback to the AI assistant.
-*   **Playwright-Based:** Utilizes the powerful Playwright library for robust browser automation.
-*   **Configurable:** Supports headless/headed execution, configurable timeouts.
+*   **Self Healing:** Existing tests self heal in case of code changes. No need to manually update.
+*   **UI tests:** UI tests which aren't supported by playwright directly are also supported. For example, `Check if the text is overflowing in the div`
 
 ## How it Works
 
