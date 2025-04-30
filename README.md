@@ -26,6 +26,7 @@ This creates a tighter feedback loop, automating the testing process and allowin
 *   **Automated Feedback Loop:** Execution results (including failures, screenshots, console logs) are returned, providing direct feedback to the AI assistant.
 *   **Self Healing:** Existing tests self heal in case of code changes. No need to manually update.
 *   **UI tests:** UI tests which aren't supported by playwright directly are also supported. For example, `Check if the text is overflowing in the div`
+*   **Visual Regression Testing**: Using traditional pixelmatch and vision LLM approach.
 
 ## How it Works
 
