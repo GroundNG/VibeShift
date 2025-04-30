@@ -7,13 +7,46 @@ from playwright.sync_api import sync_playwright, Page, TimeoutError as Playwrigh
 from typing import Optional, Dict, Any, Tuple, List
 from pydantic import BaseModel, Field
 import re
+from PIL import Image
+from pixelmatch.contrib.PIL import pixelmatch
+import io
 
 from ..browser.browser_controller import BrowserController # Re-use for browser setup/teardown
 from ..llm.llm_client import LLMClient
 from ..agents.recorder_agent import WebAgent
+from ..utils.image_utils import compare_images
 
 # Define a short timeout specifically for selector validation during healing
 HEALING_SELECTOR_VALIDATION_TIMEOUT_MS = 2000
+
+def get_image_from_bytes(img_bytes: bytes) -> Optional[Image.Image]:
+    """
+    Converts screenshot bytes (like those from page.screenshot() or locator.screenshot())
+    into a PIL Image object.
+
+    Args:
+        img_bytes: The raw bytes of the PNG screenshot.
+
+    Returns:
+        A PIL Image object in RGBA format, or None if conversion fails.
+    """
+    if not img_bytes:
+        logger.warning("get_image_from_bytes called with empty bytes.")
+        return None
+    try:
+        # Create a BytesIO buffer to treat the bytes like a file
+        buffer = io.BytesIO(img_bytes)
+        # Open the image from the buffer using Pillow
+        img = Image.open(buffer)
+        # Ensure the image is in RGBA format for consistency,
+        # especially important for pixel comparisons that might expect an alpha channel.
+        logger.info("received")
+        return img.convert("RGBA")
+    except Exception as e:
+        logger.error(f"Failed to convert bytes to PIL Image: {e}", exc_info=True)
+        return None
+
+
 
 class HealingSelectorSuggestion(BaseModel):
     """Schema for the LLM's suggested replacement selector during healing."""
@@ -33,7 +66,9 @@ class TestExecutor:
             default_timeout: int = 5000,    # Default timeout for actions/assertions
             enable_healing: bool = False,   # Flag for healing
             healing_mode: str = 'soft',     # Healing mode ('soft' or 'hard')
-            healing_retries: int = 1        # Max soft healing attempts per step
+            healing_retries: int = 1,        # Max soft healing attempts per step
+            baseline_dir: str = "./visual_baselines", # Add baseline dir
+            pixel_threshold: float = 0.01 # Default 1% pixel difference threshold
         ): 
         self.headless = headless
         self.default_timeout = default_timeout # Milliseconds
@@ -64,6 +99,31 @@ class TestExecutor:
              logger.info(f"TestExecutor initialized (headless={headless}, timeout={default_timeout}ms) with LLMClient for provider '{self.llm_client.provider}'.")
         else:
              logger.info(f"TestExecutor initialized (headless={headless}, timeout={default_timeout}ms). LLMClient not provided (headless mode or vision assertions not needed).")
+        
+        self.baseline_dir = os.path.abspath(baseline_dir)
+        self.pixel_threshold = pixel_threshold # Store threshold
+        logger.info(f"TestExecutor initialized (visual baseline dir: {self.baseline_dir}, pixel threshold: {self.pixel_threshold*100:.2f}%)")
+        os.makedirs(self.baseline_dir, exist_ok=True) # Ensure baseline dir exists
+        
+        
+    def _load_baseline(self, baseline_id: str) -> Tuple[Optional[Image.Image], Optional[Dict]]:
+        """Loads the baseline image and metadata."""
+        metadata_path = os.path.join(self.baseline_dir, f"{baseline_id}.json")
+        image_path = os.path.join(self.baseline_dir, f"{baseline_id}.png") # Assume PNG
+
+        if not os.path.exists(metadata_path) or not os.path.exists(image_path):
+            logger.error(f"Baseline files not found for ID '{baseline_id}' in {self.baseline_dir}")
+            return None, None
+
+        try:
+            with open(metadata_path, 'r', encoding='utf-8') as f:
+                metadata = json.load(f)
+            baseline_img = Image.open(image_path).convert("RGBA") # Load and ensure RGBA
+            logger.info(f"Loaded baseline '{baseline_id}' (Image: {image_path}, Metadata: {metadata_path})")
+            return baseline_img, metadata
+        except Exception as e:
+            logger.error(f"Error loading baseline files for ID '{baseline_id}': {e}", exc_info=True)
+            return None, None
 
 
     def _get_locator(self, selector: str):
@@ -127,6 +187,7 @@ class TestExecutor:
                 modified_test_data = test_data.copy() 
 
             steps = modified_test_data.get("steps", [])
+            viewport = next((json.load(open(os.path.join(self.baseline_dir, f"{step.get('parameters', {}).get('baseline_id')}.json"))).get("viewport_size") for step in steps if step.get("action") == "assert_visual_match" and step.get('parameters', {}).get('baseline_id') and os.path.exists(os.path.join(self.baseline_dir, f"{step.get('parameters', {}).get('baseline_id')}.json"))), None)
             test_name = modified_test_data.get("test_name", "Unnamed Test")
             feature_description = modified_test_data.get("feature_description", "")
             run_status["test_name"] = test_name
@@ -136,7 +197,7 @@ class TestExecutor:
                 raise ValueError("No steps found in the test file.")
 
             # --- Setup Browser ---
-            self.browser_controller = BrowserController(headless=self.headless)
+            self.browser_controller = BrowserController(headless=self.headless, viewport_size=viewport)
             # Set default timeout before starting the page
             self.browser_controller.default_action_timeout = self.default_timeout
             self.browser_controller.default_navigation_timeout = max(self.default_timeout, 30000) # Ensure navigation timeout is reasonable
@@ -168,7 +229,7 @@ class TestExecutor:
                 current_selector = original_selector # Start with the recorded selector
                 last_error = None # Store the last error encountered
                 successful_healed_selector_for_step = None
-
+                run_status["visual_assertion_results"] = []
                 while not step_healed and current_healing_attempts <= self.healing_retries_per_step:
                     try:
                         if action == "navigate":
@@ -299,6 +360,194 @@ class TestExecutor:
                             if not current_selector: raise ValueError("Missing 'current_selector' for assert_enabled.")
                             locator = self._get_locator(current_selector)
                             expect(locator).to_be_enabled(timeout=self.default_timeout)
+                        elif action == "assert_visual_match":
+                            baseline_id = params.get("baseline_id")
+                            element_selector = step.get("selector") # Use step's selector if available
+                            use_llm = params.get("use_llm_fallback", True)
+                            # Allow overriding threshold per step
+                            step_threshold = params.get("pixel_threshold", self.pixel_threshold)
+
+                            if not baseline_id:
+                                raise ValueError("Missing 'baseline_id' parameter for assert_visual_match.")
+
+                            logger.info(f"--- Performing Visual Assertion: '{baseline_id}' (Selector: {element_selector}, Threshold: {step_threshold*100:.2f}%, LLM: {use_llm}) ---")
+
+                            # 1. Load Baseline
+                            baseline_img, baseline_meta = self._load_baseline(baseline_id)
+                            if not baseline_img or not baseline_meta:
+                                raise FileNotFoundError(f"Baseline '{baseline_id}' not found or failed to load.")
+
+                            # 2. Capture Current State
+                            current_screenshot_bytes = None
+                            if element_selector:
+                                current_screenshot_bytes = self.browser_controller.take_screenshot_element(element_selector)
+                            else:
+                                current_screenshot_bytes = self.browser_controller.take_screenshot() # Full page
+
+                            if not current_screenshot_bytes:
+                                raise PlaywrightError("Failed to capture current screenshot for visual comparison.")
+
+                            try:
+                                # Create a BytesIO buffer to treat the bytes like a file
+                                buffer = io.BytesIO(current_screenshot_bytes)
+                                # Open the image from the buffer using Pillow
+                                img = Image.open(buffer)
+                                # Ensure the image is in RGBA format for consistency,
+                                # especially important for pixel comparisons that might expect an alpha channel.
+                                logger.info("received")
+                                current_img = img.convert("RGBA")
+                            except Exception as e:
+                                logger.error(f"Failed to convert bytes to PIL Image: {e}", exc_info=True)
+                                current_img = None
+
+                            
+                            
+                            if not current_img:
+                                raise RuntimeError("Failed to process current screenshot bytes into an image.")
+                            
+
+                            # 3. Pre-check Dimensions
+                            if baseline_img.size != current_img.size:
+                                size_mismatch_msg = f"Visual Assertion Failed: Image dimensions mismatch for '{baseline_id}'. Baseline: {baseline_img.size}, Current: {current_img.size}."
+                                logger.error(size_mismatch_msg)
+                                # Save current image for debugging
+                                ts = time.strftime("%Y%m%d_%H%M%S")
+                                current_img_path = os.path.join("output", f"visual_fail_{baseline_id}_current_{ts}.png")
+                                current_img.save(current_img_path)
+                                logger.info(f"Saved current image (dimension mismatch) to: {current_img_path}")
+                                raise AssertionError(size_mismatch_msg) # Fail the assertion
+
+                            # 4. Pixel Comparison
+                            img_diff = Image.new("RGBA", baseline_img.size) # Image to store diff pixels
+                            try:
+                                mismatched_pixels = pixelmatch(baseline_img, current_img, img_diff, includeAA=True, threshold=0.1) # Use default pixelmatch threshold first
+                            except Exception as pm_error:
+                                logger.error(f"Error during pixelmatch comparison for '{baseline_id}': {pm_error}", exc_info=True)
+                                raise RuntimeError(f"Pixelmatch library error: {pm_error}") from pm_error
+
+
+                            total_pixels = baseline_img.width * baseline_img.height
+                            diff_ratio = mismatched_pixels / total_pixels if total_pixels > 0 else 0
+                            logger.info(f"Pixel comparison for '{baseline_id}': Mismatched Pixels = {mismatched_pixels}, Total Pixels = {total_pixels}, Difference = {diff_ratio*100:.4f}%")
+
+                            # 5. Check against threshold
+                            pixel_match_passed = diff_ratio <= step_threshold
+                            llm_reasoning = None
+                            diff_image_path = None
+
+                            if pixel_match_passed:
+                                logger.info(f"✅ Visual Assertion PASSED (Pixel Diff <= Threshold) for '{baseline_id}'.")
+                                # Step completed successfully
+                            else:
+                                logger.warning(f"Visual Assertion: Pixel difference ({diff_ratio*100:.4f}%) exceeds threshold ({step_threshold*100:.2f}%) for '{baseline_id}'.")
+
+                                # Save diff image regardless of LLM outcome
+                                ts = time.strftime("%Y%m%d_%H%M%S")
+                                diff_image_path = os.path.join("output", f"visual_diff_{baseline_id}_{ts}.png")
+                                try:
+                                    img_diff.save(diff_image_path)
+                                    logger.info(f"Saved pixel difference image to: {diff_image_path}")
+                                except Exception as save_err:
+                                    logger.error(f"Failed to save diff image: {save_err}")
+                                    diff_image_path = None # Mark as failed
+
+                                # 6. LLM Fallback
+                                if use_llm and self.llm_client:
+                                    logger.info(f"Attempting LLM visual comparison fallback for '{baseline_id}'...")
+                                    baseline_bytes = io.BytesIO()
+                                    baseline_img.save(baseline_bytes, format='PNG')
+                                    baseline_bytes = baseline_bytes.getvalue()
+
+                                    # --- UPDATED LLM PROMPT for Stitched Image ---
+                                    llm_prompt = f"""Analyze the combined image provided below for the purpose of automated software testing.
+            The LEFT half (labeled '1: Baseline') is the established baseline screenshot.
+            The RIGHT half (labeled '2: Current') is the current state screenshot.
+
+            Compare these two halves to determine if they are SEMANTICALLY equivalent from a user's perspective.
+
+            IGNORE minor differences like:
+            - Anti-aliasing variations
+            - Single-pixel shifts
+            - Tiny rendering fluctuations
+            - Small, insignificant dynamic content changes (e.g., blinking cursors, exact timestamps if not the focus).
+
+            FOCUS ON significant differences like:
+            - Layout changes (elements moved, resized, missing, added)
+            - Major color changes of key elements
+            - Text content changes (errors, different labels, etc.)
+            - Missing or fundamentally different images/icons.
+
+            Baseline ID: "{baseline_id}"
+            Captured URL (Baseline): "{baseline_meta.get('url_captured', 'N/A')}"
+            Selector (Baseline): "{baseline_meta.get('selector_captured', 'Full Page')}"
+
+            Based on these criteria, are the two halves (baseline vs. current) functionally and visually equivalent enough to PASS a visual regression test?
+
+            Respond ONLY with "YES" or "NO", followed by a brief explanation justifying your answer by referencing differences between the left and right halves.
+            Example YES: YES - The left (baseline) and right (current) images are visually equivalent. Minor text rendering differences are ignored.
+            Example NO: NO - The primary call-to-action button visible on the left (baseline) is missing on the right (current).
+            """
+                                    # --- END UPDATED PROMPT ---
+
+                                    try:
+                                        # No change here, compare_images handles the stitching internally
+                                        llm_response = compare_images(llm_prompt, baseline_bytes, current_screenshot_bytes, self.llm_client)
+                                        logger.info(f"LLM visual comparison response for '{baseline_id}': {llm_response}")
+                                        llm_reasoning = llm_response # Store reasoning
+
+                                        if llm_response.strip().upper().startswith("YES"):
+                                            logger.info(f"✅ Visual Assertion PASSED (LLM Override) for '{baseline_id}'.")
+                                            pixel_match_passed = True # Override pixel result
+                                        elif llm_response.strip().upper().startswith("NO"):
+                                            logger.warning(f"Visual Assertion: LLM confirmed significant difference for '{baseline_id}'.")
+                                            pixel_match_passed = False # Confirm failure
+                                        else:
+                                            logger.warning(f"Visual Assertion: LLM response unclear for '{baseline_id}'. Treating as failure.")
+                                            pixel_match_passed = False
+                                    except Exception as llm_err:
+                                        logger.error(f"LLM visual comparison failed: {llm_err}", exc_info=True)
+                                        llm_reasoning = f"LLM Error: {llm_err}"
+                                        pixel_match_passed = False # Treat LLM error as failure
+
+                                else: # LLM fallback not enabled or LLM not available
+                                    logger.warning(f"Visual Assertion: LLM fallback skipped for '{baseline_id}'. Failing based on pixel difference.")
+                                    pixel_match_passed = False
+
+                                # 7. Handle Final Failure
+                                if not pixel_match_passed:
+                                    failure_msg = f"Visual Assertion Failed for '{baseline_id}'. Pixel diff: {diff_ratio*100:.4f}% (Threshold: {step_threshold*100:.2f}%)."
+                                    if llm_reasoning: failure_msg += f" LLM Reason: {llm_reasoning}"
+                                    logger.error(failure_msg)
+                                    # Add details to run_status before raising
+                                    visual_failure_details = {
+                                        "baseline_id": baseline_id,
+                                        "pixel_difference_ratio": diff_ratio,
+                                        "pixel_threshold": step_threshold,
+                                        "mismatched_pixels": mismatched_pixels,
+                                        "diff_image_path": diff_image_path,
+                                        "llm_reasoning": llm_reasoning
+                                    }
+                                    # We need to store this somewhere accessible when raising the final error
+                                    # Let's add it directly to the step dict temporarily? Or a dedicated failure context?
+                                    # For now, log it and include basics in the AssertionError
+                                    run_status["visual_failure_details"] = visual_failure_details # Add to main run status
+                                    raise AssertionError(failure_msg) # Fail the step
+
+                            visual_result = {
+                                "step_id": step_id,
+                                "baseline_id": baseline_id,
+                                "status": "PASS" if pixel_match_passed else "FAIL",
+                                "pixel_difference_ratio": diff_ratio,
+                                "mismatched_pixels": mismatched_pixels,
+                                "pixel_threshold": step_threshold,
+                                "llm_override": use_llm and not pixel_match_passed and llm_response.strip().upper().startswith("YES") if 'llm_response' in locals() else False,
+                                "llm_reasoning": llm_reasoning,
+                                "diff_image_path": diff_image_path,
+                                "element_selector": element_selector
+                            }
+                            run_status["visual_assertion_results"].append(visual_result)
+       
+
                         elif action == "assert_passed_verification" or action == "assert_llm_verification":
                             if not self.llm_client:
                                 raise PlaywrightError("LLMClient not available for vision-based verification step.")
@@ -404,6 +653,8 @@ class TestExecutor:
                             is_healable_error = False
                         if action == "navigate":
                             is_healable_error = False
+                        if action == "assert_visual_match":
+                            is_healable_error = False
 
                         can_attempt_healing = self.enable_healing and is_healable_error and current_healing_attempts < self.healing_retries_per_step
 
@@ -484,6 +735,8 @@ class TestExecutor:
                     error_type = type(last_error).__name__ if last_error else "UnknownError"
                     error_msg = str(last_error) if last_error else "Step failed after healing attempts."
                     run_status["error_details"] = f"{error_type}: {error_msg}"
+                    if run_status["status"] == "FAIL" and step.get("action") == "assert_visual_match" and "visual_failure_details" in run_status:
+                        run_status["error_details"] += f"\nVisual Failure Details: {run_status['visual_failure_details']}"
 
                     # Failure Handling (Screenshot/Logs)
                     try:
@@ -507,6 +760,7 @@ class TestExecutor:
                     return run_status # Return immediately
                 
             # If loop completes without breaking due to permanent failure
+            logger.info("--- Setting final status to PASS ---") 
             run_status["status"] = "PASS"
             run_status["message"] = "✅ Test executed successfully."
             if any_step_successfully_healed:
@@ -562,7 +816,6 @@ class TestExecutor:
                      # Add warning to message if save failed
                      if run_status["status"] == "PASS":
                           run_status["message"] += " (Warning: Failed to save healed selectors)"
-            
             logger.info(f"Execution finished in {run_status['duration_seconds']:.2f} seconds. Status: {run_status['status']}")
 
         return run_status
@@ -622,7 +875,7 @@ class TestExecutor:
 - HTML Context (Visible elements, interactive `[index]`, static `(Static)`):
 ```html
 {dom_context_str}
-\```
+```
 
 **Your Task:**
 1. Based on the step description, the original action, the visual screenshot, AND the HTML context, identify the element the test likely intended to interact with.
@@ -637,7 +890,7 @@ class TestExecutor:
   "new_selector": "YOUR_SUGGESTED_CSS_SELECTOR_OR_NULL",
   "reasoning": "Explain your choice of selector, referencing visual cues, HTML attributes, and the original step description. If returning null, explain why."
 }}
-\```
+```
 """
 
         try:
@@ -687,7 +940,6 @@ class TestExecutor:
                         return False, None, response_obj.reasoning + validation_reasoning_suffix
 
 
-                    return True, response_obj.new_selector, response_obj.reasoning
                 else:
                     logger.warning(f"Soft Healing: LLM could not suggest a new selector. Reasoning: {response_obj.reasoning}")
                     return False, None, response_obj.reasoning

@@ -7,3 +7,5 @@ pydantic>=2.0
 pytest
 pytest-html
 mcp[cli]
+pixelmatch>=0.3.0
+openai

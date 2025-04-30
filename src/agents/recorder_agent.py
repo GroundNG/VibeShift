@@ -8,8 +8,10 @@ from typing import Dict, Any, Optional, List, Tuple, Union, Literal
 import random
 import os
 import threading # For timer
-from datetime import datetime
-from pydantic import BaseModel, Field, validator
+from datetime import datetime, timezone
+from pydantic import BaseModel, Field
+from PIL import Image
+import io
 
 # Use relative imports within the package
 from ..browser.browser_controller import BrowserController
@@ -98,10 +100,19 @@ class WebAgent:
                  max_extracted_data_history: int = 7, # Less relevant for recorder? Keep for now.
                  is_recorder_mode: bool = False,
                  automated_mode: bool = False,
-                 filename: str = ""): 
+                 filename: str = "",
+                 baseline_dir: str = "./visual_baselines"): 
 
         self.llm_client = llm_client
         self.is_recorder_mode = is_recorder_mode
+        self.baseline_dir = os.path.abspath(baseline_dir) # Store baseline dir
+        # Ensure baseline dir exists during initialization
+        try:
+            os.makedirs(self.baseline_dir, exist_ok=True)
+            logger.info(f"Visual baseline directory set to: {self.baseline_dir}")
+        except OSError as e:
+             logger.warning(f"Could not create baseline directory '{self.baseline_dir}': {e}. Baseline saving might fail.")
+
         # Determine effective headless: Recorder forces non-headless unless automated
         effective_headless = headless
         if self.is_recorder_mode and not automated_mode:
@@ -134,9 +145,9 @@ class WebAgent:
         self.automated_mode = automated_mode
 
         # Log effective mode
-        mode_name = "Recorder" if self.is_recorder_mode else "Execution (Legacy)"
         automation_status = "Automated" if self.automated_mode else "Interactive"
-        logger.info(f"WebAgent ({mode_name} Mode / {automation_status}) initialized (headless={effective_headless}, max_planned_steps={max_iterations}, max_hist={max_history_length}, max_retries={max_retries_per_subtask}).")
+        logger.info(f"WebAgent (Recorder Mode / {automation_status}) initialized (headless={effective_headless}, max_planned_steps={max_iterations}, max_hist={max_history_length}, max_retries={max_retries_per_subtask}).")
+        logger.info(f"Visual baseline directory: {self.baseline_dir}")
 
 
     def _add_to_history(self, entry_type: str, data: Any):
@@ -255,6 +266,7 @@ class WebAgent:
             - **GOOD:** `Verify login success indicator is visible` (More general)
             - **AVOID:** `Verify text 'Welcome John Doe!' is visible` (Too specific if name changes)
         4.  **Scrolling:** `Scroll down` (if content might be off-screen)
+        5.  **Visual Baseline Capture:** If the feature description implies capturing a visual snapshot at a key state (e.g., after login, after adding to cart), use: `Visually baseline the [short description of state]`. Examples: `Visually baseline the login page`, `Visually baseline the dashboard after login`, `Visually baseline the product details page`.
 
         **CRITICAL:** Focus on the *intent* of each step. Do NOT include specific selectors or indices in the plan. The recorder determines those interactively.
 
@@ -272,6 +284,7 @@ class WebAgent:
             "Type 'pwd123' into element 'password input field'",
             "Click element 'login button'",
             "Verify 'Welcome, tester!' message is present"
+            "Visually baseline the user dashboard"
           ]
         }}
 
@@ -280,8 +293,7 @@ class WebAgent:
         # --- End Prompt ---
 
         logger.debug(f"[TEST PLAN] Sending Planning Prompt (snippet):\n{prompt[:500]}...")
-        # <<< START CHANGE >>>
-        # Replace text generation and manual parsing with generate_json
+        
         response_obj = self.llm_client.generate_json(PlanSubtasksSchema, prompt)
 
         subtasks = None
@@ -292,6 +304,7 @@ class WebAgent:
             # Validate the parsed list
             if isinstance(response_obj.planned_steps, list) and all(isinstance(s, str) and s for s in response_obj.planned_steps):
                 subtasks = response_obj.planned_steps
+                logger.info(f"Subtasks: {subtasks}")
             else:
                 logger.warning(f"[TEST PLAN] Parsed JSON planned_steps is not a list of non-empty strings: {response_obj.planned_steps}")
                 raw_response_for_history = f"Parsed object invalid content: {response_obj}" # Log the invalid object
@@ -313,6 +326,67 @@ class WebAgent:
             # Use the captured raw_response_for_history which contains error details
             self._add_to_history("Test Plan Failed", {"feature": feature_description, "raw_response": raw_response_for_history})
             raise ValueError("Failed to generate a valid test plan from the feature description.")
+        
+    def _save_visual_baseline(self, baseline_id: str, screenshot_bytes: bytes, selector: Optional[str] = None) -> bool:
+        """Saves the screenshot and metadata for a visual baseline."""
+        if not screenshot_bytes:
+            logger.error(f"Cannot save baseline '{baseline_id}', no screenshot bytes provided.")
+            return False
+
+        image_path = os.path.join(self.baseline_dir, f"{baseline_id}.png")
+        metadata_path = os.path.join(self.baseline_dir, f"{baseline_id}.json")
+
+        # --- Prevent Overwrite (Optional - Prompt user or fail) ---
+        if os.path.exists(image_path) or os.path.exists(metadata_path):
+            if self.automated_mode:
+                logger.warning(f"Baseline '{baseline_id}' already exists. Overwriting in automated mode.")
+                # Allow overwrite in automated mode
+            else: # Interactive mode
+                overwrite = input(f"Baseline '{baseline_id}' already exists. Overwrite? (y/N) > ").strip().lower()
+                if overwrite != 'y':
+                    logger.warning(f"Skipping baseline save for '{baseline_id}' - user chose not to overwrite.")
+                    return False # Indicate skipped save
+        # --- End Overwrite Check ---
+
+        try:
+            # 1. Save Image
+            img = Image.open(io.BytesIO(screenshot_bytes))
+            img.save(image_path, format='PNG')
+            logger.info(f"Saved baseline image to: {image_path}")
+
+            # 2. Gather Metadata
+            current_url = self.browser_controller.get_current_url()
+            viewport_size = self.browser_controller.get_viewport_size()
+            browser_info = self.browser_controller.get_browser_version()
+            os_info = self.browser_controller.get_os_info()
+            timestamp = datetime.now(timezone.utc).isoformat()
+
+            metadata = {
+                "baseline_id": baseline_id,
+                "image_file": os.path.basename(image_path), # Store relative path
+                "created_at": timestamp,
+                "updated_at": timestamp, # Same initially
+                "url_captured": current_url,
+                "viewport_size": viewport_size,
+                "browser_info": browser_info,
+                "os_info": os_info,
+                "selector_captured": selector # Store selector if it was an element capture
+            }
+
+            # 3. Save Metadata
+            with open(metadata_path, 'w', encoding='utf-8') as f:
+                json.dump(metadata, f, indent=2, ensure_ascii=False)
+            logger.info(f"Saved baseline metadata to: {metadata_path}")
+
+            return True # Success
+
+        except Exception as e:
+            logger.error(f"Error saving baseline '{baseline_id}' (Image: {image_path}, Meta: {metadata_path}): {e}", exc_info=True)
+            # Clean up potentially partially saved files
+            if os.path.exists(image_path): os.remove(image_path)
+            if os.path.exists(metadata_path): os.remove(metadata_path)
+            return False # Failure
+
 
 
     def _get_llm_verification(self,
@@ -829,10 +903,9 @@ Now, generate the verification JSON for: "{verification_description}"
                 self.recorded_steps.append(failed_record)
                 self._current_step_id += 1
                 logger.info(f"Step {failed_record['step_id']} recorded (AI Verification FAILED - Automated)")
-                # Mark as skipped so test continues, but failure is noted in recorded steps
                 self.task_manager.update_subtask_status(
                     self.task_manager.current_subtask_index,
-                    "skipped", # Mark as skipped
+                    "failed", # Mark as skipped
                     result=f"AI verification failed: {reasoning}. Recorded as failed assertion.",
                     force_update=True
                 )
@@ -2034,6 +2107,7 @@ Respond ONLY with the JSON object matching the schema.
                     if self.task_manager.is_complete():
                          # Check if ANY task failed permanently
                          perm_failed_tasks = [t for t in self.task_manager.subtasks if t['status'] == 'failed' and t['attempts'] > self.task_manager.max_retries_per_subtask]
+                         logger.error(perm_failed_tasks)
                          if perm_failed_tasks:
                               first_failed_idx = self.task_manager.subtasks.index(perm_failed_tasks[0])
                               failed_task = perm_failed_tasks[0]
@@ -2139,7 +2213,7 @@ Respond ONLY with the JSON object matching the schema.
                         parts = re.split("navigate to", current_planned_task['description'], maxsplit=1, flags=re.IGNORECASE)
                         if len(parts) > 1 and parts[1].strip():
                             url = parts[1].strip()
-                            print(f"Action: Navigate to {url}")
+                            # print(f"Action: Navigate to {url}")
                             exec_result = self._execute_action_for_recording("navigate", None, {"url": url})
                             if exec_result["success"]:
                                 # Record navigation step + implicit wait
@@ -2210,6 +2284,105 @@ Respond ONLY with the JSON object matching the schema.
                          logger.error(f"Error handling scroll step: {scroll_e}")
                          self.task_manager.update_subtask_status(current_task_index, "failed", error=f"Scroll step failed: {scroll_e}") # Mark failed
                     step_handled_internally = True # Scroll handled
+                    
+                # -- 4. Handle Visual Baseline Capture Step ---
+                elif planned_step_desc_lower.startswith("visually baseline"):
+                    planned_desc = current_planned_task['description']
+                    logger.info(f"Handling planned step: '{planned_desc}'")
+
+                    target_description = planned_step_desc_lower.replace("visually baseline the", "").strip()
+                    default_baseline_id = re.sub(r'\s+', '_', target_description) # Generate default ID
+                    default_baseline_id = re.sub(r'[^\w\-]+', '', default_baseline_id)[:50] # Sanitize
+
+                    baseline_id = None
+                    target_selector = None
+                    capture_type = 'page' # Default to full page
+
+                    # --- Mode-dependent handling ---
+                    if self.automated_mode:
+                        print = lambda *args, **kwargs: logger.info(f"[Auto Mode Baseline] {' '.join(map(str, args))}")
+                        baseline_id = default_baseline_id or f"baseline_{self._current_step_id}" # Ensure ID exists
+                        print(f"Capturing baseline: '{baseline_id}' (Full Page - Default)")
+                        # Note: Automated mode currently only supports full page baselines.
+                        # To support element baselines, we'd need AI to suggest selector or pre-define targets.
+
+                    else: # Interactive Mode
+                        print("\n" + "="*60)
+                        print(f"Planned Step: {planned_desc}")
+                        baseline_id = input(f"Enter Baseline ID (default: '{default_baseline_id}'): ").strip() or default_baseline_id
+                        capture_choice = input("Capture Full Page (P) or Specific Element (E)? [P]: ").strip().lower()
+
+                        if capture_choice == 'e':
+                            capture_type = 'element'
+                            print("Click the element to capture as baseline...")
+                            self.browser_controller.clear_highlights() # Clear any previous
+                            listener_setup = self.browser_controller.setup_click_listener()
+                            if listener_setup:
+                                try:
+                                    target_selector = self.browser_controller.wait_for_user_click_or_timeout(20.0)
+                                    if target_selector:
+                                        print(f"Element selected. Using selector: {target_selector}")
+                                        # Highlight the selected element briefly
+                                        try:
+                                            self.browser_controller.highlight_element(target_selector, 0, color="#00FF00", text="Baseline Element")
+                                            time.sleep(1.5) # Show highlight briefly
+                                        except: pass # Ignore highlight errors
+                                    else:
+                                        print("No element selected (timeout). Defaulting to Full Page.")
+                                        capture_type = 'page'
+                                except Exception as e:
+                                    logger.error(f"Error during element selection for baseline: {e}")
+                                    print("Error selecting element. Defaulting to Full Page.")
+                                    capture_type = 'page'
+                                self.browser_controller.remove_click_listener() # Clean up listener
+                            else:
+                                print("Error setting up click listener. Defaulting to Full Page.")
+                                capture_type = 'page'
+                        else: # Default to Page
+                            print("Capturing Full Page baseline.")
+                            capture_type = 'page'
+
+                    # --- Capture and Save Baseline ---
+                    capture_success = False
+                    final_screenshot_bytes = None
+                    if capture_type == 'element' and target_selector:
+                        final_screenshot_bytes = self.browser_controller.take_screenshot_element(target_selector)
+                        if final_screenshot_bytes:
+                            capture_success = self._save_visual_baseline(baseline_id, final_screenshot_bytes, selector=target_selector)
+                        else:
+                             logger.error(f"Failed to capture element screenshot for baseline '{baseline_id}' selector '{target_selector}'.")
+                             if not self.automated_mode: print("Error: Failed to capture element screenshot.")
+                    else: # Full page
+                        # Use the screenshot already taken during state gathering if available
+                        final_screenshot_bytes = screenshot_bytes
+                        if final_screenshot_bytes:
+                            capture_success = self._save_visual_baseline(baseline_id, final_screenshot_bytes, selector=None)
+                        else:
+                             logger.error(f"Failed to capture full page screenshot for baseline '{baseline_id}'.")
+                             if not self.automated_mode: print("Error: Failed to capture full page screenshot.")
+
+                    # --- Record assert_visual_match step ---
+                    if capture_success:
+                        record = {
+                            "step_id": self._current_step_id,
+                            "action": "assert_visual_match", # The corresponding execution action
+                            "description": planned_desc, # Use the baseline description
+                            "parameters": {"baseline_id": baseline_id},
+                            "selector": target_selector, # Null for page, selector for element
+                            "wait_after_secs": DEFAULT_WAIT_AFTER_ACTION
+                        }
+                        self.recorded_steps.append(record)
+                        self._current_step_id += 1
+                        logger.info(f"Step {record['step_id']} recorded: assert_visual_match for baseline '{baseline_id}' ({'Element' if target_selector else 'Page'})")
+                        self.task_manager.update_subtask_status(current_task_index, "done", result=f"Recorded baseline '{baseline_id}'")
+                        self._consecutive_suggestion_failures = 0
+                    else:
+                        # Baseline capture/save failed
+                        logger.error(f"Failed to save baseline '{baseline_id}'. Skipping recording.")
+                        if not self.automated_mode: print(f"Failed to save baseline '{baseline_id}'. Skipping.")
+                        self.task_manager.update_subtask_status(current_task_index, "skipped", result="Failed to save baseline")
+
+                    step_handled_internally = True # Baseline capture handled
 
                 # --- 4. Default: Assume Interactive Click/Type ---
                 if not step_handled_internally:

@@ -64,8 +64,14 @@ async def record_test_flow(feature_description: str, project_directory: str, hea
     try:
         # 1. Initialize required components
         api_key = get_api_key()
-        llm_client = LLMClient(gemini_api_key=api_key, provider='gemini')
+        # llm_client = LLMClient(gemini_api_key=api_key, provider='gemini')
+        api_version = load_api_version();
+        api_model = load_llm_model();
+        api_base_url = load_api_base_url();
 
+        if api_version:
+            llm_client = LLMClient(provider='LLM', LLM_api_key=api_key, LLM_api_version=api_version, LLM_endpoint=api_base_url, LLM_model_name=api_model, LLM_vision_model_name=api_model)
+        
         # 2. Instantiate WebAgent in AUTOMATED mode
         recorder_agent = WebAgent(
             llm_client=llm_client,

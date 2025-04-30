@@ -7,6 +7,7 @@ import json
 import os
 from typing import Optional, Any, Dict, List, Callable, Tuple
 import threading
+import platform
 
 from ..dom.service import DomService
 from ..dom.views import DOMState, DOMElementNode, SelectorMap
@@ -496,7 +497,7 @@ REMOVE_CLICK_LISTENER_JS = """
 class BrowserController:
     """Handles Playwright browser automation tasks, including console message capture."""
 
-    def __init__(self, headless=True):
+    def __init__(self, headless=True, viewport_size=None):
         self.playwright: Playwright | None = None
         self.browser: Browser | None = None
         self.context: Optional[Any] = None # Keep context reference
@@ -508,6 +509,7 @@ class BrowserController:
         self.console_messages: List[Dict[str, Any]] = [] # <-- Add list to store messages
         self._recorder_ui_injected = False # Track if UI script is injected
         self._panel_interaction_lock = threading.Lock() # Prevent race conditions waiting for panel
+        self.viewport_size = viewport_size
         logger.info(f"BrowserController initialized (headless={headless}).")
 
     # inject ui panel onto the browser
@@ -924,6 +926,32 @@ class BrowserController:
         except Exception as e:
             logger.warning(f"Could not clear highlights: {e}")
 
+    def get_browser_version(self) -> str:
+        if not self.browser:
+            return "Unknown"
+        try:
+            # Browser version might be available directly
+            return f"{self.browser.browser_type.name} {self.browser.version}"
+        except Exception:
+            logger.warning("Could not retrieve exact browser version.")
+            return self.browser.browser_type.name if self.browser else "Unknown"
+
+    def get_os_info(self) -> str:
+        try:
+            return f"{platform.system()} {platform.release()}"
+        except Exception:
+            logger.warning("Could not retrieve OS information.")
+            return "Unknown"
+
+    def get_viewport_size(self) -> Optional[Dict[str, int]]:
+         if not self.page:
+              return None
+         try:
+              return self.page.viewport_size # Returns {'width': W, 'height': H} or None
+         except Exception:
+             logger.warning("Could not retrieve viewport size.")
+             return None
+
     def _handle_console_message(self, message: ConsoleMessage):
         """Callback function to handle console messages."""
         msg_type = message.type
@@ -1066,8 +1094,11 @@ class BrowserController:
         ]
         base = random.choice(common_sizes)
         # Add small random offset
-        base['width'] += random.randint(-10, 10)
-        base['height'] += random.randint(-5, 5)
+        if not self.viewport_size:
+            base['width'] += random.randint(-10, 10)
+            base['height'] += random.randint(-5, 5)
+        else:
+            base = self.viewport_size
         return base
 
     def close(self):

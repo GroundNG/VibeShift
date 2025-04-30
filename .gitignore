@@ -6,3 +6,5 @@ __pycache__/
 ignore-*
 .DS_Store
 doc
+stitched.png
+visual_baselines/

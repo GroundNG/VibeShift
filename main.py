@@ -110,6 +110,9 @@ if __name__ == "__main__":
     try:
         # --- Configuration ---
         api_key = load_api_key()
+        endpoint = load_api_base_url()
+        api_version = load_api_version()
+        model_name = load_llm_model()
         if not os.path.exists("output"):
             try:
                 os.makedirs("output")
@@ -131,7 +134,7 @@ if __name__ == "__main__":
 
 
             # --- Initialize Components ---
-            llm_client = LLMClient(gemini_api_key=api_key, provider='gemini')
+            llm_client = LLMClient(gemini_api_key=api_key, provider=args.provider, LLM_api_key=api_key, LLM_endpoint=endpoint, LLM_api_version=api_version, LLM_model_name=model_name)
             automated = False
             if args.automated == True:
                 automated = True
@@ -175,6 +178,7 @@ if __name__ == "__main__":
         elif args.mode == 'execute':
             logger.info(f"Starting in EXECUTE mode for file: {args.file}")
             HEADLESS_BROWSER = args.headless # Use flag for executor headless
+            PIXEL_MISMATCH_THRESHOLD = 0.01
             heal_msg = f"Self-Healing: {'ENABLED (' + args.healing_mode + ' mode)' if args.enable_healing else 'DISABLED'}"
             print(f"Running in EXECUTE mode ({'Headless' if args.headless else 'Visible Browser'}). {heal_msg}")
 
@@ -195,7 +199,8 @@ if __name__ == "__main__":
                 llm_client=llm_client, # Pass the initialized client
                 headless=args.headless,
                 enable_healing=args.enable_healing,
-                healing_mode=args.healing_mode
+                healing_mode=args.healing_mode,
+                pixel_threshold=PIXEL_MISMATCH_THRESHOLD
                 # healing_retries can be added as arg if needed
             )
             test_result = executor.run_test(args.file)
@@ -207,6 +212,27 @@ if __name__ == "__main__":
             print(f"Duration: {test_result.get('duration_seconds', 'N/A')} seconds")
             print(f"Message: {test_result.get('message', 'N/A')}")
             print(f"Healing: {'ENABLED ('+test_result.get('healing_mode','N/A')+' mode)' if test_result.get('healing_enabled') else 'DISABLED'}")
+            
+            visual_results = test_result.get("visual_assertion_results", [])
+            if visual_results:
+                 print("\n--- Visual Assertion Results ---")
+                 for vr in visual_results:
+                     status = vr.get('status', 'UNKNOWN')
+                     override = " (LLM Override)" if vr.get('llm_override') else ""
+                     diff_percent = vr.get('pixel_difference_ratio', 0) * 100
+                     thresh_percent = vr.get('pixel_threshold', PIXEL_MISMATCH_THRESHOLD) * 100 # Use executor's default if needed
+                     print(f"- Step {vr.get('step_id')}, Baseline '{vr.get('baseline_id')}': {status}{override}")
+                     print(f"  Pixel Difference: {diff_percent:.4f}% (Threshold: {thresh_percent:.2f}%)")
+                     if status == 'FAIL':
+                         if vr.get('diff_image_path'):
+                             print(f"  Diff Image: {vr.get('diff_image_path')}")
+                         if vr.get('llm_reasoning'):
+                             print(f"  LLM Reasoning: {vr.get('llm_reasoning')}")
+                     elif vr.get('llm_override'): # Passed due to LLM
+                           if vr.get('llm_reasoning'):
+                             print(f"  LLM Reasoning: {vr.get('llm_reasoning')}")
+
+                 print("-" * 20)
 
             # Display Healing Attempts Log
             healing_attempts = test_result.get("healing_attempts", [])
