@@ -993,7 +993,7 @@ You are an AI Test Recorder Assistant helping recover from an unexpected state d
 
 
 **Your Task:**
-Analyze the current situation, context (DOM, URL, screenshot if provided), and the overall goal.
+Analyze the current situation, context (DOM, URL, screenshot if provided), and the overall goal. If you are not clear and think scrolling might help, you can scroll to see the complete page.
 Generate a JSON object matching the required schema.
 - **If recovery is possible:** Provide a **short sequence (1-3 steps)** of recovery actions in the `recovery_steps` field (list of strings). These steps should aim to get back on track towards the original goal OR correctly perform the intended action of the failed step ('{current_planned_task['description']}') in the *current* context. Focus ONLY on the immediate recovery. Example: `["Click element 'Close Popup Button'", "Verify 'Main Page Title' is visible"]`. `action` field should be null.
 - **If recovery seems impossible, too complex, or unsafe:** Set the `action` field to `"abort"` and provide a brief explanation in the `reasoning` field. `recovery_steps` should be null. Example: `{{"action": "abort", "reasoning": "Critical error page displayed, cannot identify recovery elements."}}`
@@ -2264,7 +2264,6 @@ Respond ONLY with the JSON object matching the schema.
                     try:
                         direction = "down" if "down" in planned_step_desc_lower else "up" if "up" in planned_step_desc_lower else None
                         if direction:
-                            print(f"Action: Scroll {direction}")
                             exec_result = self._execute_action_for_recording("scroll", None, {"direction": direction})
                             if exec_result["success"]:
                                 self.recorded_steps.append({
@@ -2276,10 +2275,8 @@ Respond ONLY with the JSON object matching the schema.
                                 self.task_manager.update_subtask_status(current_task_index, "done", result="Recorded scroll")
                                 self._consecutive_suggestion_failures = 0 # Reset failure counter
                             else:
-                                 print(f"Optional scroll failed: {exec_result['message']}. Skipping recording.")
                                  self.task_manager.update_subtask_status(current_task_index, "skipped", result="Optional scroll failed")
                         else:
-                             print(f"Could not determine scroll direction from: {current_planned_task['description']}. Skipping.")
                              self.task_manager.update_subtask_status(current_task_index, "skipped", result="Unknown scroll direction")
                     except Exception as scroll_e:
                          logger.error(f"Error handling scroll step: {scroll_e}")

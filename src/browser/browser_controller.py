@@ -289,36 +289,6 @@ class BrowserController:
             base = self.viewport_size
         return base
 
-    def _find_element(self, selector: str, timeout=None) -> Optional[Locator]:
-        """Finds the first element matching the selector."""
-        if not self.page:
-             raise PlaywrightError("Browser not started.")
-        effective_timeout = timeout if timeout is not None else self.default_action_timeout
-        logger.debug(f"Attempting to find element: '{selector}' (timeout: {effective_timeout}ms)")
-        try:
-             # Use locator().first to explicitly target the first match
-             element = self.page.locator(selector).first
-             # Brief wait for attached state, primary checks in actions
-             element.wait_for(state='attached', timeout=effective_timeout * 0.5)
-             # Scroll into view if needed
-             try:
-                  element.scroll_into_view_if_needed(timeout=effective_timeout * 0.25)
-                  time.sleep(0.1)
-             except Exception as scroll_e:
-                  logger.warning(f"Non-critical: Could not scroll element {selector} into view. Error: {scroll_e}")
-             logger.debug(f"Element found and attached: '{selector}'")
-             return element
-        except PlaywrightTimeoutError:
-             # Don't log as error here, actions will report failure if needed
-             logger.debug(f"Timeout ({effective_timeout}ms) waiting for element state 'attached' or scrolling: '{selector}'.")
-             return None
-        except PlaywrightError as e:
-            logger.error(f"PlaywrightError finding element '{selector}': {e}")
-            return None
-        except Exception as e:
-            logger.error(f"Unexpected error finding element '{selector}': {e}", exc_info=True)
-            return None
-
     def _human_like_delay(self, min_secs: float, max_secs: float):
         """ Sleeps for a random duration within the specified range. """
         delay = random.uniform(min_secs, max_secs)

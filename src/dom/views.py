@@ -238,7 +238,7 @@ class DOMElementNode(DOMBaseNode):
                 for attr_key in attrs_to_check:
                     if attr_key in node.attributes and node.attributes[attr_key] is not None: # Check for not None
                         # Simple check to exclude extremely long class lists for brevity, unless it's ID/testid
-                        if attr_key == 'class' and len(node.attributes[attr_key]) > 100 and context_purpose == 'action':
+                        if attr_key == 'class' and len(node.attributes[attr_key]) > 20 and context_purpose == 'action':
                             attributes_to_show[attr_key] = node.attributes[attr_key][:97] + "..."
                         else:
                             attributes_to_show[attr_key] = node.attributes[attr_key]
@@ -280,6 +280,9 @@ class DOMElementNode(DOMBaseNode):
                     # Include if common tag OR has text OR *has attributes calculated in attrs_str*
                     if node.tag_name in common_static_tags or text_content or attrs_str:
                         include_this_static = True
+                        
+                if not text_content:
+                    include_this_static = False
 
                 if include_this_static:
                     # --- Assign temporary static ID ---
