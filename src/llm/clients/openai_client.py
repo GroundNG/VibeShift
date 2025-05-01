@@ -68,8 +68,8 @@ class OpenAIClient:
             raise ValueError("LLM_api_key, LLM_endpoint, LLM_api_version, and LLM_model_name are required for provider 'LLM'")
         try:
             self.client = OpenAI(
-                api_key=LLM_api_key,
-                base_url=LLM_endpoint,
+                api_key=self.LLM_api_key,
+                base_url=self.LLM_endpoint,
             )
             # Test connection slightly by listing models (optional, requires different permission potentially)
             # self.client.models.list()
