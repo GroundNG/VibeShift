@@ -200,7 +200,9 @@ if __name__ == "__main__":
                 headless=args.headless,
                 enable_healing=args.enable_healing,
                 healing_mode=args.healing_mode,
-                pixel_threshold=PIXEL_MISMATCH_THRESHOLD
+                pixel_threshold=PIXEL_MISMATCH_THRESHOLD,
+                get_performance=True,
+                get_network_requests=True   
                 # healing_retries can be added as arg if needed
             )
             test_result = executor.run_test(args.file)
@@ -212,6 +214,43 @@ if __name__ == "__main__":
             print(f"Duration: {test_result.get('duration_seconds', 'N/A')} seconds")
             print(f"Message: {test_result.get('message', 'N/A')}")
             print(f"Healing: {'ENABLED ('+test_result.get('healing_mode','N/A')+' mode)' if test_result.get('healing_enabled') else 'DISABLED'}")
+            
+            perf_timing = test_result.get("performance_timing")
+            if perf_timing:
+                 try:
+                      nav_start = perf_timing.get('navigationStart', 0)
+                      load_end = perf_timing.get('loadEventEnd', 0)
+                      dom_content_loaded = perf_timing.get('domContentLoadedEventEnd', 0)
+                      dom_interactive = perf_timing.get('domInteractive', 0)
+
+                      if nav_start > 0: # Ensure navigationStart is valid
+                           print("\n--- Performance Metrics (Initial Load) ---")
+                           if load_end > nav_start: print(f"  Page Load Time (loadEventEnd): {(load_end - nav_start):,}ms")
+                           if dom_content_loaded > nav_start: print(f"  DOM Content Loaded (domContentLoadedEventEnd): {(dom_content_loaded - nav_start):,}ms")
+                           if dom_interactive > nav_start: print(f"  DOM Interactive: {(dom_interactive - nav_start):,}ms")
+                           print("-" * 20)
+                      else:
+                           print("\n--- Performance Metrics (Initial Load): navigationStart not captured ---")
+                 except Exception as perf_err:
+                     logger.warning(f"Could not process performance timing: {perf_err}")
+                     print("\n--- Performance Metrics: Error processing data ---")
+            # ------------------------------------
+
+            # --- Network Request Summary ---
+            network_reqs = test_result.get("network_requests", [])
+            if network_reqs:
+                 print("\n--- Network Summary ---")
+                 total_reqs = len(network_reqs)
+                 http_error_reqs = len([r for r in network_reqs if (r.get('status', 0) or 0) >= 400])
+                 error_reqs = len([r for r in network_reqs if (r.get('status', 0) or 0) >= 400])
+                 slow_reqs = len([r for r in network_reqs if (r.get('duration_ms') or 0) > 1500]) # Example: > 1.5s
+
+                 print(f"  Total Requests: {total_reqs}")
+                 if http_error_reqs > 0: print(f"  Requests >= 400 Status: {http_error_reqs}")
+                 if error_reqs > 0: print(f"  Requests >= 400 Status: {error_reqs}")
+                 if slow_reqs > 0: print(f"  Requests > 1500ms: {slow_reqs}")
+                 print("(See JSON report for full network details)")
+                 print("-" * 20)
             
             visual_results = test_result.get("visual_assertion_results", [])
             if visual_results:

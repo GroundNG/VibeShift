@@ -68,7 +68,9 @@ class TestExecutor:
             healing_mode: str = 'soft',     # Healing mode ('soft' or 'hard')
             healing_retries: int = 1,        # Max soft healing attempts per step
             baseline_dir: str = "./visual_baselines", # Add baseline dir
-            pixel_threshold: float = 0.01 # Default 1% pixel difference threshold
+            pixel_threshold: float = 0.01, # Default 1% pixel difference threshold
+            get_performance: bool = False,
+            get_network_requests: bool = False
         ): 
         self.headless = headless
         self.default_timeout = default_timeout # Milliseconds
@@ -79,6 +81,8 @@ class TestExecutor:
         self.healing_mode = healing_mode
         self.healing_retries_per_step = healing_retries
         self.healing_attempts_log: List[Dict] = [] # To store healing attempts info
+        self.get_performance = get_performance
+        self.get_network_requests = get_network_requests
         
         
         logger.info(f"TestExecutor initialized (headless={headless}, timeout={default_timeout}ms).")
@@ -169,12 +173,15 @@ class TestExecutor:
             "screenshot_on_failure": None,
             "console_messages_on_failure": [],
             "all_console_messages": [],
+            "performance_timing": None,
+            "network_requests": [],
             "duration_seconds": 0.0,
             "healing_enabled": self.enable_healing,
             "healing_mode": self.healing_mode if self.enable_healing else "disabled",
             "healing_attempts": self.healing_attempts_log, # Reference the list
             "healed_file_saved": False,
             "healed_steps_count": 0,
+            "visual_assertion_results": []
         }
 
         try:
@@ -190,6 +197,7 @@ class TestExecutor:
             viewport = next((json.load(open(os.path.join(self.baseline_dir, f"{step.get('parameters', {}).get('baseline_id')}.json"))).get("viewport_size") for step in steps if step.get("action") == "assert_visual_match" and step.get('parameters', {}).get('baseline_id') and os.path.exists(os.path.join(self.baseline_dir, f"{step.get('parameters', {}).get('baseline_id')}.json"))), None)
             test_name = modified_test_data.get("test_name", "Unnamed Test")
             feature_description = modified_test_data.get("feature_description", "")
+            first_navigation_done = False
             run_status["test_name"] = test_name
             logger.info(f"Executing test: '{test_name}' with {len(steps)} steps.")
 
@@ -208,6 +216,9 @@ class TestExecutor:
             # Re-apply default timeout to the page context AFTER it's created
             self.page.set_default_timeout(self.default_timeout)
             logger.info(f"Browser page initialized with default action timeout: {self.default_timeout}ms")
+            
+            self.browser_controller.clear_console_messages()
+            self.browser_controller.clear_network_requests() 
 
             # --- Execute Steps ---
             for i, step in enumerate(steps):
@@ -235,7 +246,11 @@ class TestExecutor:
                         if action == "navigate":
                             url = params.get("url")
                             if not url: raise ValueError("Missing 'url' parameter for navigate.")
-                            self.page.goto(url) # Uses default navigation timeout from context
+                            self.browser_controller.goto(url)# Uses default navigation timeout from context
+                            if not first_navigation_done:
+                                if self.get_performance:
+                                    run_status["performance_timing"] = self.browser_controller.page_performance_timing
+                                first_navigation_done = True
                         elif action == "click":
                             if not current_selector: raise ValueError("Missing 'current_selector' for click.")
                             locator = self._get_locator(current_selector)
@@ -688,6 +703,9 @@ class TestExecutor:
 
                             elif self.healing_mode == 'hard':
                                 logger.warning(f"Hard Healing triggered for Step {step_id} due to error: {error_msg}")
+                                if self.browser_controller:
+                                     self.browser_controller.clear_console_messages()
+                                     self.browser_controller.clear_network_requests()
                                 healing_log_entry["mode"] = "hard" # Log mode
                                 healing_log_entry["success"] = True # Mark attempt as 'successful' in triggering re-record
                                 self.healing_attempts_log.append(healing_log_entry) # Log before triggering
@@ -786,10 +804,17 @@ class TestExecutor:
         finally:
             logger.info("--- Ending Test Execution ---")
             if self.browser_controller:
-                # Capture final logs if not already done on failure/healing trigger
+                if self.get_network_requests:
+                    try: run_status["network_requests"] = self.browser_controller.get_network_requests()
+                    except: logger.error("Failed to retrieve final network requests.")
+                # Performance timing is captured after navigation, check if it exists
+                if run_status.get("performance_timing") is None and self.get_performance is not False:
+                    try: run_status["performance_timing"] = self.browser_controller.get_performance_timing()
+                    except: logger.error("Failed to retrieve final performance timing.")
+                # Console messages captured on failure or here
                 if "all_console_messages" not in run_status or not run_status["all_console_messages"]:
                      try: run_status["all_console_messages"] = self.browser_controller.get_console_messages()
-                     except: pass
+                     except: logger.error("Failed to retrieve final console messages.")
 
                 self.browser_controller.close()
                 self.browser_controller = None

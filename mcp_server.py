@@ -6,6 +6,7 @@ import logging
 from typing import List, Dict, Any, Optional
 import asyncio
 import re
+import time
 
 # Ensure agent modules are importable (adjust path if necessary)
 # Assuming mcp_server.py is at the root level alongside agent.py etc.
@@ -96,15 +97,18 @@ async def record_test_flow(feature_description: str, project_directory: str, hea
 
 # --- MCP Tool: Run a Single Regression Test ---
 @mcp.tool()
-async def run_regression_test(test_file_path: str, headless: bool = True, enable_healing: bool = True, healing_mode: str = 'soft') -> Dict[str, Any]:
+async def run_regression_test(test_file_path: str, headless: bool = True, enable_healing: bool = True, healing_mode: str = 'soft', get_performance: bool = False, get_network_requests: bool = False) -> Dict[str, Any]:
     """
     Runs a previously recorded test case from a JSON file. If a case fails, it could be either because your code has a problem, or could be you missed/wrong step in feature description
+    
 
     Args:
         test_file_path: The relative or absolute path to the .json test file (e.g., 'output/test_login.json').
         headless: Run the browser in headless mode (no visible window). Defaults to True.
         enable_healing: Whether to run this regression test with healing mode enabled. In healing mode, if test fails because of a changed or flaky selector, the agent can try to heal the test automatically.
         healing_mode: can be 'soft' or 'hard'. In soft mode, only single step is attempted to heal. In hard healing, complete test is tried to be re-recorded
+        get_performance: Whether to include performance stats in response
+        get_network_requests: Whether to include network stats in response
 
     Returns:
         A dictionary containing the execution result summary, including status (PASS/FAIL),
@@ -147,7 +151,9 @@ async def run_regression_test(test_file_path: str, headless: bool = True, enable
             headless=headless, 
             llm_client=llm_client, 
             enable_healing=enable_healing,
-            healing_mode=healing_mode
+            healing_mode=healing_mode,
+            get_network_requests=get_network_requests,
+            get_performance=get_performance
             )
         logger.info(f"Delegating test execution for '{test_file_path}' to a separate thread...")
         test_result = await asyncio.to_thread(
@@ -159,6 +165,14 @@ async def run_regression_test(test_file_path: str, headless: bool = True, enable
         # Post-processing (synchronous)
         test_result["success"] = test_result.get("status") == "PASS"
         logger.info(f"Execution finished for '{test_file_path}' (thread returned). Status: {test_result.get('status')}")
+        try:
+                base_name = os.path.splitext(os.path.basename(test_file_path))[0]
+                result_filename = os.path.join("output", f"execution_result_{base_name}_{time.strftime('%Y%m%d_%H%M%S')}.json")
+                with open(result_filename, 'w', encoding='utf-8') as f:
+                    json.dump(test_result, f, indent=2, ensure_ascii=False)
+                print(f"\nFull execution result details saved to: {result_filename}")
+        except Exception as save_err:
+                logger.error(f"Failed to save full execution result JSON: {save_err}")
         return test_result
 
     except FileNotFoundError:

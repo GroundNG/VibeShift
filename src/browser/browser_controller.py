@@ -1,5 +1,5 @@
 # /src/browser_controller.py
-from playwright.sync_api import sync_playwright, Page, Browser, Playwright, TimeoutError as PlaywrightTimeoutError, Error as PlaywrightError, Locator, ConsoleMessage, expect
+from playwright.sync_api import sync_playwright, Page, Browser, Playwright, TimeoutError as PlaywrightTimeoutError, Error as PlaywrightError, Response, Request, Locator, ConsoleMessage, expect
 import logging
 import time
 import random
@@ -510,7 +510,58 @@ class BrowserController:
         self._recorder_ui_injected = False # Track if UI script is injected
         self._panel_interaction_lock = threading.Lock() # Prevent race conditions waiting for panel
         self.viewport_size = viewport_size
+        self.network_requests: List[Dict[str, Any]] = []
+        self.page_performance_timing: Optional[Dict[str, Any]] = None 
         logger.info(f"BrowserController initialized (headless={headless}).")
+        
+    def _handle_response(self, response: Response):
+        """Callback function to handle network responses."""
+        request = response.request
+        timing = request.timing
+        # Calculate duration robustly
+        start_time = timing.get('requestStart', -1)
+        end_time = timing.get('responseEnd', -1)
+        duration_ms = None
+        if start_time >= 0 and end_time >= 0 and end_time >= start_time:
+            duration_ms = round(end_time - start_time)
+                
+        req_data = {
+            "url": response.url,
+            "method": request.method,
+            "status": response.status,
+            "status_text": response.status_text,
+            "start_time_ms": start_time if start_time >= 0 else None, # Use ms relative to navigationStart
+            "end_time_ms": end_time if end_time >= 0 else None,     # Use ms relative to navigationStart
+            "duration_ms": duration_ms,
+            "resource_type": request.resource_type,
+            "headers": dict(response.headers), # Store response headers
+            "request_headers": dict(request.headers), # Store request headers
+            # Timing breakdown (optional, can be verbose)
+            # "timing_details": timing,
+        }
+        self.network_requests.append(req_data)
+        
+    def _handle_request_failed(self, request: Request):
+        """Callback function to handle failed network requests."""
+        try:
+            failure_text = request.failure
+            logger.warning(f"[NETWORK.FAILED] {request.method} {request.url} - Error: {failure_text}")
+            req_data = {
+                "url": request.url,
+                "method": request.method,
+                "status": None, # No status code available for request failure typically
+                "status_text": "Request Failed",
+                "start_time_ms": request.timing.get('requestStart', -1) if request.timing else None, # May still have start time
+                "end_time_ms": None, # Failed before response end
+                "duration_ms": None,
+                "resource_type": request.resource_type,
+                "headers": None, # No response headers
+                "request_headers": dict(request.headers),
+                "error_text": failure_text # Store the failure reason
+            }
+            self.network_requests.append(req_data)
+        except Exception as e:
+             logger.error(f"Error within _handle_request_failed for URL {request.url}: {e}", exc_info=True)
 
     # inject ui panel onto the browser
     def inject_recorder_ui_scripts(self):
@@ -1046,8 +1097,11 @@ class BrowserController:
             
             # --- Attach Console Listener ---
             self.page.on('console', self._handle_console_message)
-            logger.info("Attached console message listener to the page.")
-
+            logger.info("Attached console message listener.")
+            self.page.on('response', self._handle_response) # <<< Attach network listener
+            logger.info("Attached network response listener.")
+            self.page.on('requestfailed', self._handle_request_failed)
+            logger.info("Attached network failed listener.")
             self.inject_recorder_ui_scripts() # inject recorder ui
             
             # -----------------------------
@@ -1066,6 +1120,15 @@ class BrowserController:
         """Clears the stored console messages."""
         logger.debug("Clearing captured console messages.")
         self.console_messages = []
+        
+    def get_network_requests(self) -> List[Dict[str, Any]]:
+        """Returns a copy of the captured network request data."""
+        return list(self.network_requests)
+
+    def clear_network_requests(self):
+        """Clears the stored network request data."""
+        logger.debug("Clearing captured network requests.")
+        self.network_requests = []
 
 
     def _get_random_user_agent(self):
@@ -1106,6 +1169,19 @@ class BrowserController:
         self.remove_recorder_panel()
         self.remove_click_listener() 
         try:
+            if self.page and not self.page.is_closed():
+                try:
+                    self.page.remove_listener('response', self._handle_response) # <<< Remove network listener
+                    logger.debug("Removed network response listener.")
+                except Exception as e: logger.warning(f"Could not remove response listener: {e}")
+                try:
+                    self.page.remove_listener('console', self._handle_console_message)
+                    logger.debug("Removed console message listener.")
+                except Exception as e: logger.warning(f"Could not remove console listener: {e}")
+                try:
+                     self.page.remove_listener('requestfailed', self._handle_request_failed) # <<< Remove requestfailed listener
+                     logger.debug("Removed network requestfailed listener.")
+                except Exception as e: logger.warning(f"Could not remove requestfailed listener: {e}")
             self._dom_service = None
             if self.page and not self.page.is_closed():
                 # logger.debug("Closing page...") # Added for clarity
@@ -1130,6 +1206,7 @@ class BrowserController:
             self.browser = None
             self.playwright = None
             self.console_messages = [] # Clear messages on final close
+            self.network_requests = [] # Clear network data on final close
             self._recorder_ui_injected = False
 
     def validate_assertion(self, assertion_type: str, selector: str, params: Dict[str, Any], timeout_ms: int = 3000) -> Tuple[bool, Optional[str]]:
@@ -1286,6 +1363,25 @@ class BrowserController:
              logger.error(f"Error generating selector for node {node.xpath}: {e}", exc_info=True)
              return node.xpath # Fallback to xpath
     
+    def get_performance_timing(self) -> Optional[Dict[str, Any]]:
+        """Gets the window.performance.timing object from the page."""
+        if not self.page:
+            logger.error("Cannot get performance timing, page not initialized.")
+            return None
+        try:
+            # Evaluate script to get the performance timing object as JSON
+            timing_json = self.page.evaluate("() => JSON.stringify(window.performance.timing)")
+            if timing_json:
+                self.page_performance_timing = json.loads(timing_json) # Store it
+                logger.debug("Retrieved window.performance.timing.")
+                return self.page_performance_timing
+            else:
+                logger.warning("window.performance.timing unavailable or empty.")
+                return None
+        except Exception as e:
+            logger.error(f"Error getting performance timing: {e}", exc_info=True)
+            return None
+    
     def goto(self, url: str):
         """Navigates the page to a specific URL."""
         if not self.page:
@@ -1293,10 +1389,14 @@ class BrowserController:
         try:
             logger.info(f"Navigating to URL: {url}")
             # Use default navigation timeout set in context
-            response = self.page.goto(url, wait_until='domcontentloaded', timeout=self.default_navigation_timeout) # 'load' or 'networkidle' might be better sometimes
+            response = self.page.goto(url, wait_until='load', timeout=self.default_navigation_timeout) 
             # Add a small stable delay after load
-            time.sleep(2)
+            time.sleep(1)
             status = response.status if response else 'unknown'
+            
+            # --- Capture performance timing after navigation ---
+            self.get_performance_timing()
+            
             logger.info(f"Navigation to {url} finished with status: {status}.")
             if response and not response.ok:
                  logger.warning(f"Navigation to {url} resulted in non-OK status: {status}")
@@ -1602,47 +1702,6 @@ class BrowserController:
             logger.error(f"Unexpected error extracting attributes {attributes} from '{selector}': {e}", exc_info=True)
             return {"error": f"General error extracting attributes from {selector}: {e}"}
 
-
-    def save_json_data(self, data: Any, file_path: str) -> dict:
-        """
-        Saves structured data as a JSON file to the given location.
-
-        Args:
-            data: The data to save (typically a dict or list that is JSON serializable).
-            file_path: The path/filename where to save the JSON file (e.g., 'output/results.json').
-
-        Returns:
-            dict: Status of the operation with success flag, message, and file path.
-        """
-        try:
-            # Ensure the directory exists
-            abs_file_path = os.path.abspath(file_path)
-            os.makedirs(os.path.dirname(abs_file_path), exist_ok=True)
-
-            # Save the JSON data with pretty formatting
-            with open(abs_file_path, 'a', encoding='utf-8') as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
-
-            logger.info(f"Successfully saved JSON data to {abs_file_path}")
-            return {
-                "success": True,
-                "message": f"Data successfully saved to {abs_file_path}",
-                "file_path": abs_file_path
-            }
-        except TypeError as e:
-             logger.error(f"Data provided is not JSON serializable for file {file_path}: {e}", exc_info=True)
-             return {
-                 "success": False,
-                 "message": f"Error saving JSON: Provided data is not serializable ({e})",
-                 "error": str(e)
-             }
-        except Exception as e:
-            logger.error(f"Error saving JSON data to {file_path}: {e}", exc_info=True)
-            return {
-                "success": False,
-                "message": f"Error saving JSON data: {e}",
-                "error": str(e)
-            }
 
     def _human_like_delay(self, min_secs: float, max_secs: float):
         """ Sleeps for a random duration within the specified range. """
