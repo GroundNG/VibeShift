@@ -69,7 +69,7 @@ if __name__ == "__main__":
         default='soft',
         help="Self-healing mode: 'soft' (fix selector) or 'hard' (re-record) ('execute' mode only)."
     )
-    parser.add_argument('--provider', choices=['gemini', 'LLM'], default='gemini', help="LLM provider (default: gemini).")
+    parser.add_argument('--provider', choices=['gemini', 'openai', 'azure'], default='gemini', help="LLM provider (default: gemini). Choose openai for any OpenAI compatible LLMs.")
     args = parser.parse_args()
 
     # Validate arguments based on mode
@@ -134,7 +134,8 @@ if __name__ == "__main__":
 
 
             # --- Initialize Components ---
-            llm_client = LLMClient(gemini_api_key=api_key, provider=args.provider, LLM_api_key=api_key, LLM_endpoint=endpoint, LLM_api_version=api_version, LLM_model_name=model_name)
+            llm_client = LLMClient(provider=args.provider)
+            
             automated = False
             if args.automated == True:
                 automated = True
@@ -183,16 +184,7 @@ if __name__ == "__main__":
             print(f"Running in EXECUTE mode ({'Headless' if args.headless else 'Visible Browser'}). {heal_msg}")
 
             
-            if args.provider == "LLM":
-                api_version = load_api_version();
-                api_model = load_llm_model();
-                api_base_url = load_api_base_url();
-                if api_version:
-                    llm_client = LLMClient(provider='LLM', LLM_api_key=api_key, LLM_api_version=api_version, LLM_endpoint=api_base_url, LLM_model_name=api_model, LLM_vision_model_name=api_model)
-                else: 
-                    llm_client = LLMClient(provider='LLM', LLM_api_key=api_key, LLM_endpoint=api_base_url, LLM_model_name=api_model, LLM_vision_model_name=api_model)
-            else:
-                llm_client = LLMClient(gemini_api_key=api_key, provider='gemini')
+            llm_client = LLMClient(provider=args.provider)
 
             # Executor doesn't need LLM client directly
             executor = TestExecutor(
@@ -359,7 +351,7 @@ if __name__ == "__main__":
             print(f"Max pages to crawl: {args.max_pages}")
 
             # Initialize Components
-            llm_client = LLMClient(api_key=api_key)
+            llm_client = LLMClient(provider=args.provider)
             crawler = CrawlerAgent(
                 llm_client=llm_client,
                 headless=HEADLESS_BROWSER

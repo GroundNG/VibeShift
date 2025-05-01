@@ -1,4 +1,4 @@
-# /src/browser_controller.py
+# /src/browser/browser_controller.py
 from playwright.sync_api import sync_playwright, Page, Browser, Playwright, TimeoutError as PlaywrightTimeoutError, Error as PlaywrightError, Response, Request, Locator, ConsoleMessage, expect
 import logging
 import time
@@ -11,6 +11,7 @@ import platform
 
 from ..dom.service import DomService
 from ..dom.views import DOMState, DOMElementNode, SelectorMap
+from .panel.panel import Panel
 
 logger = logging.getLogger(__name__)
 
@@ -147,331 +148,6 @@ async () => {
 }
 """
 
-RECORDER_PANEL_JS = """
-() => {
-    const PANEL_ID = 'bw-recorder-panel';
-    const INPUT_ID = 'bw-recorder-param-input'; // Used for general param input now
-    const PARAM_BTN_ID = 'bw-recorder-param-button'; // Button next to general param input
-    const PARAM_CONT_ID = 'bw-recorder-param-container'; // Container for single param input
-    const ASSERT_PARAM_INPUT1_ID = 'bw-assert-param1';
-    const ASSERT_PARAM_INPUT2_ID = 'bw-assert-param2';
-    const ASSERT_PARAM_CONT_ID = 'bw-assert-param-container'; // Container for assertion-specific params
-
-    // --- Function to create or get the panel ---
-    function getOrCreatePanel() {
-        let panel = document.getElementById(PANEL_ID);
-        if (!panel) {
-            panel = document.createElement('div');
-            panel.id = PANEL_ID;
-            // Basic Styling (customize as needed)
-            Object.assign(panel.style, {
-                position: 'fixed',
-                bottom: '10px',
-                right: '10px',
-                padding: '10px',
-                background: 'rgba(40, 40, 40, 0.9)',
-                color: 'white',
-                border: '1px solid #ccc',
-                borderRadius: '5px',
-                zIndex: '2147483647', // Max z-index
-                fontFamily: 'sans-serif',
-                fontSize: '12px',
-                boxShadow: '0 2px 5px rgba(0,0,0,0.3)',
-                display: 'none', // Initially hidden
-                pointerEvents: 'none'
-            });
-            document.body.appendChild(panel);
-        }
-        return panel;
-    }
-    
-    // --- Helper to Set Button Listeners ---
-    // (choiceValue is what window._recorder_user_choice will be set to)
-    function setChoiceOnClick(buttonId, choiceValue) {
-        const btn = document.getElementById(buttonId);
-        if (btn) {
-            btn.onclick = () => { window._recorder_user_choice = choiceValue; };
-        } else {
-             console.warn(`[Recorder Panel] Button with ID ${buttonId} not found for listener.`);
-        }
-    }
-    
-    // State 1: Confirm/Override Assertion Target
-    window._recorder_showAssertionTargetPanel = (plannedDesc, suggestedSelector) => {
-        const panel = getOrCreatePanel();
-        const selectorDisplay = suggestedSelector ? `<code>${suggestedSelector.substring(0, 100)}...</code>` : '<i>AI could not suggest a target.</i>';
-        panel.innerHTML = `
-            <div style="margin-bottom: 5px; font-weight: bold; pointer-events: auto;">Define Assertion:</div>
-            <div style="margin-bottom: 8px; max-width: 300px; word-wrap: break-word; pointer-events: auto;">${plannedDesc}</div>
-            <div style="margin-bottom: 5px; font-style: italic; pointer-events: auto;">Suggested Target Selector: ${selectorDisplay}</div>
-            <button id="bw-assert-confirm-target" style="margin: 2px; padding: 3px 6px; pointer-events: auto;" ${!suggestedSelector ? 'disabled' : ''}>Use Suggested</button>
-            <button id="bw-assert-override-target" style="margin: 2px; padding: 3px 6px; pointer-events: auto;">Click New Target</button>
-            <button id="bw-assert-skip" style="margin: 2px; padding: 3px 6px; pointer-events: auto;">Skip Assertion</button>
-            <button id="bw-abort-btn" style="margin: 2px; padding: 3px 6px; background-color: #d9534f; color: white; border: none; pointer-events: auto;">Abort</button>
-        `;
-        window._recorder_user_choice = undefined; // Reset choice
-        setChoiceOnClick('bw-assert-confirm-target', 'confirm_target');
-        setChoiceOnClick('bw-assert-override-target', 'override_target');
-        setChoiceOnClick('bw-assert-skip', 'skip');
-        setChoiceOnClick('bw-abort-btn', 'abort');
-        panel.style.display = 'block';
-        console.log('[Recorder Panel] Assertion Target Panel Shown.');
-    };
-    
-    // State 2: Select Assertion Type
-    window._recorder_showAssertionTypePanel = (targetSelector) => {
-        const panel = getOrCreatePanel();
-        panel.innerHTML = `
-             <div style="margin-bottom: 5px; font-weight: bold; pointer-events: auto;">Select Assertion Type:</div>
-             <div style="margin-bottom: 8px; font-size: 11px; pointer-events: auto;">Target: <code>${targetSelector.substring(0, 100)}...</code></div>
-             <div style="display: flex; flex-wrap: wrap; gap: 5px; pointer-events: auto;">
-                 <button id="type-contains" style="padding: 3px 6px; pointer-events: auto;">Text Contains</button>
-                 <button id="type-equals" style="padding: 3px 6px; pointer-events: auto;">Text Equals</button>
-                 <button id="type-visible" style="padding: 3px 6px; pointer-events: auto;">Is Visible</button>
-                 <button id="type-hidden" style="padding: 3px 6px; pointer-events: auto;">Is Hidden</button>
-                 <button id="type-attr" style="padding: 3px 6px; pointer-events: auto;">Attribute Equals</button>
-                 <button id="type-count" style="padding: 3px 6px; pointer-events: auto;">Element Count</button>
-                 <button id="type-checked" style="padding: 3px 6px; pointer-events: auto;">Is Checked</button>
-                 <button id="type-not-checked" style="padding: 3px 6px; pointer-events: auto;">Not Checked</button>
-             </div>
-             <hr style="margin: 8px 0; border-top: 1px solid #555;">
-             <button id="bw-assert-back-target" style="margin-right: 5px; padding: 3px 6px; pointer-events: auto;">< Back (Target)</button>
-             <button id="bw-assert-skip" style="margin-right: 5px; padding: 3px 6px; pointer-events: auto;">Skip Assertion</button>
-             <button id="bw-abort-btn" style="padding: 3px 6px; background-color: #d9534f; color: white; border: none; pointer-events: auto;">Abort</button>
-        `;
-        window._recorder_user_choice = undefined; // Reset choice
-        // Set listeners for type selection
-        setChoiceOnClick('type-contains', 'select_type_text_contains');
-        setChoiceOnClick('type-equals', 'select_type_text_equals');
-        setChoiceOnClick('type-visible', 'select_type_visible');
-        setChoiceOnClick('type-hidden', 'select_type_hidden');
-        setChoiceOnClick('type-attr', 'select_type_attribute_equals');
-        setChoiceOnClick('type-count', 'select_type_element_count');
-        setChoiceOnClick('type-checked', 'select_type_checked');
-        setChoiceOnClick('type-not-checked', 'select_type_not_checked');
-        // Other controls
-        setChoiceOnClick('bw-assert-back-target', 'back_to_target');
-        setChoiceOnClick('bw-assert-skip', 'skip');
-        setChoiceOnClick('bw-abort-btn', 'abort');
-        panel.style.display = 'block';
-        console.log('[Recorder Panel] Assertion Type Panel Shown.');
-    };
-
-    // State 3: Enter Assertion Parameters
-    window._recorder_showAssertionParamsPanel = (targetSelector, assertionType, paramLabels) => {
-        // paramLabels is an array like ['Expected Text'] or ['Attribute Name', 'Expected Value'] or ['Expected Count']
-        const panel = getOrCreatePanel();
-        let inputHTML = '';
-        if (paramLabels.length === 1) {
-            inputHTML = `<label for="${ASSERT_PARAM_INPUT1_ID}" style="margin-right: 5px; pointer-events: auto;">${paramLabels[0]}:</label>
-                         <input type="text" id="${ASSERT_PARAM_INPUT1_ID}" style="padding: 2px 4px; width: 180px; pointer-events: auto;">`;
-        } else if (paramLabels.length === 2) {
-             inputHTML = `<div style="margin-bottom: 3px;">
-                              <label for="${ASSERT_PARAM_INPUT1_ID}" style="display: inline-block; width: 100px; pointer-events: auto;">${paramLabels[0]}:</label>
-                              <input type="text" id="${ASSERT_PARAM_INPUT1_ID}" style="padding: 2px 4px; width: 120px; pointer-events: auto;">
-                          </div>
-                          <div>
-                              <label for="${ASSERT_PARAM_INPUT2_ID}" style="display: inline-block; width: 100px; pointer-events: auto;">${paramLabels[1]}:</label>
-                              <input type="text" id="${ASSERT_PARAM_INPUT2_ID}" style="padding: 2px 4px; width: 120px; pointer-events: auto;">
-                          </div>`;
-        }
-
-        panel.innerHTML = `
-             <div style="margin-bottom: 5px; font-weight: bold; pointer-events: auto;">Enter Parameters:</div>
-             <div style="margin-bottom: 3px; font-size: 11px; pointer-events: auto;">Target: <code>${targetSelector.substring(0, 60)}...</code></div>
-             <div style="margin-bottom: 8px; font-size: 11px; pointer-events: auto;">Assertion: ${assertionType}</div>
-             <div id="${ASSERT_PARAM_CONT_ID}" style="margin-bottom: 8px; pointer-events: auto;">
-                ${inputHTML}
-             </div>
-             <button id="bw-assert-record" style="margin-right: 5px; padding: 3px 6px; pointer-events: auto;">Record Assertion</button>
-             <button id="bw-assert-back-type" style="margin-right: 5px; padding: 3px 6px; pointer-events: auto;">< Back (Type)</button>
-             <button id="bw-abort-btn" style="padding: 3px 6px; background-color: #d9534f; color: white; border: none; pointer-events: auto;">Abort</button>
-        `;
-        window._recorder_user_choice = undefined; // Reset choice
-        setChoiceOnClick('bw-assert-record', 'submit_params');
-        setChoiceOnClick('bw-assert-back-type', 'back_to_type');
-        setChoiceOnClick('bw-abort-btn', 'abort');
-        panel.style.display = 'block';
-        // Auto-focus the first input if possible
-        const firstInput = document.getElementById(ASSERT_PARAM_INPUT1_ID);
-        if (firstInput) {
-             setTimeout(() => firstInput.focus(), 50); // Short delay
-        }
-        console.log('[Recorder Panel] Assertion Params Panel Shown.');
-    };
-    
-    // State 4: Verification Review
-    window._recorder_showVerificationReviewPanel = (args) => {
-        const { plannedDesc, aiVerified, aiReasoning, assertionType, parameters, selector } = args;
-        const panel = getOrCreatePanel();
-        let detailsHTML = '';
-        let recordButtonDisabled = true; // Disable record button by default
-
-        // --- Build Details Section based on AI Result ---
-        if (aiVerified) {
-            // Check if we have enough info to actually record the assertion
-            const canRecord = assertionType && selector;
-            recordButtonDisabled = !canRecord;
-
-            detailsHTML += `<div style="margin-bottom: 3px; pointer-events: auto;">Assertion: <code>${assertionType || 'N/A'}</code></div>`;
-            detailsHTML += `<div style="margin-bottom: 3px; pointer-events: auto;">Selector: <code>${selector ? selector.substring(0, 100) + '...' : 'MISSING!'}</code></div>`;
-            // Safely format parameters (convert object to string)
-            let paramsString = 'None';
-            if (parameters && Object.keys(parameters).length > 0) {
-                 try { paramsString = JSON.stringify(parameters); } catch(e){ paramsString = '{...}'; }
-            }
-            detailsHTML += `<div style="margin-bottom: 5px; pointer-events: auto;">Parameters: <code>${paramsString}</code></div>`;
-             if (!canRecord) {
-                detailsHTML += `<div style="color: #ffcc00; font-size: 11px; pointer-events: auto;">Warning: Cannot record assertion directly (missing type or selector from AI). Choose Manual or Skip.</div>`;
-            }
-        } else {
-            // Verification failed
-             detailsHTML += `<div style="color: #ffdddd; pointer-events: auto;">AI could not verify the condition.</div>`;
-        }
-
-
-        panel.innerHTML = `
-            <div style="margin-bottom: 5px; font-weight: bold; pointer-events: auto;">AI Verification Review:</div>
-            <div style="margin-bottom: 8px; max-width: 300px; word-wrap: break-word; pointer-events: auto;">${plannedDesc}</div>
-            <div style="margin-bottom: 5px; font-style: italic; color: ${aiVerified ? '#ccffcc' : '#ffdddd'}; pointer-events: auto;">
-                AI Result: ${aiVerified ? 'PASSED' : 'FAILED'}
-            </div>
-            <div style="margin-bottom: 8px; font-size: 11px; max-height: 60px; overflow-y: auto; border: 1px dashed #666; padding: 3px; pointer-events: auto;">
-                AI Reasoning: ${aiReasoning || 'N/A'}
-            </div>
-            ${detailsHTML}
-            <hr style="margin: 8px 0; border-top: 1px solid #555;">
-            <button id="bw-verify-record" style="margin: 2px; padding: 3px 6px; pointer-events: auto;" ${recordButtonDisabled ? 'disabled title="Cannot record directly, missing info from AI"' : ''}>Record AI Assertion</button>
-            <button id="bw-verify-manual" style="margin: 2px; padding: 3px 6px; pointer-events: auto;">Define Manually</button>
-            <button id="bw-verify-skip" style="margin: 2px; padding: 3px 6px; pointer-events: auto;">Skip Step</button>
-            <button id="bw-abort-btn" style="margin: 2px; padding: 3px 6px; background-color: #d9534f; color: white; border: none; pointer-events: auto;">Abort</button>
-             <!-- Re-use existing parameterization container, initially hidden -->
-             <div id="${PARAM_CONT_ID}" style="margin-top: 8px; display: none; pointer-events: auto;">
-                 <input type="text" id="${INPUT_ID}" placeholder="Parameter Name (optional)" style="padding: 2px 4px; width: 150px; margin-right: 5px; pointer-events: auto;">
-                 <button id="${PARAM_BTN_ID}" style="padding: 3px 6px; pointer-events: auto;">Set Param & Record</button>
-             </div>
-        `;
-        window._recorder_user_choice = undefined; // Reset choice
-        window._recorder_parameter_name = undefined; // Reset param name
-
-        // Set listeners
-        setChoiceOnClick('bw-verify-record', 'record_ai');
-        setChoiceOnClick('bw-verify-manual', 'define_manual');
-        setChoiceOnClick('bw-verify-skip', 'skip');
-        setChoiceOnClick('bw-abort-btn', 'abort');
-        // Listener for the parameterization button (same as before)
-        const paramBtn = document.getElementById(PARAM_BTN_ID);
-        if (paramBtn) {
-            paramBtn.onclick = () => {
-                const inputVal = document.getElementById(INPUT_ID).value.trim();
-                window._recorder_parameter_name = inputVal ? inputVal : null;
-                window._recorder_user_choice = 'parameterized'; // Special choice
-            };
-        }
-
-        panel.style.display = 'block';
-        console.log('[Recorder Panel] Verification Review Panel Shown.');
-    };
-
-    // Function to retrieve assertion parameters
-    window._recorder_getAssertionParams = (count) => {
-        const params = {};
-        const input1 = document.getElementById(ASSERT_PARAM_INPUT1_ID);
-        if (input1) params.param1 = input1.value;
-        if (count > 1) {
-             const input2 = document.getElementById(ASSERT_PARAM_INPUT2_ID);
-             if (input2) params.param2 = input2.value;
-        }
-        console.log('[Recorder Panel] Retrieved assertion params:', params);
-        return params;
-    };
-
-    // --- Function to update panel content ---
-    window._recorder_showPanel = (stepDescription, suggestionText) => {
-        const panel = getOrCreatePanel();
-        panel.innerHTML = `
-            <div style="margin-bottom: 5px; font-weight: bold; pointer-events: auto;">Next Step:</div> <!-- Re-enable for text selection if needed -->
-            <div style="margin-bottom: 8px; max-width: 300px; word-wrap: break-word; pointer-events: auto;">${stepDescription}</div>
-            <div style="margin-bottom: 5px; font-style: italic; pointer-events: auto;">AI Suggests: ${suggestionText}</div>
-            <button id="bw-accept-btn" style="margin-right: 5px; padding: 3px 6px; pointer-events: auto;">Accept Suggestion</button> <!-- <<< Re-enable pointer events for buttons -->
-            <button id="bw-skip-btn" style="margin-right: 5px; padding: 3px 6px; pointer-events: auto;">Skip Step</button> <!-- <<< Re-enable pointer events for buttons -->
-            <button id="bw-abort-btn" style="padding: 3px 6px; background-color: #d9534f; color: white; border: none; pointer-events: auto;">Abort</button> <!-- <<< Re-enable pointer events for buttons -->
-            <div id="${PARAM_CONT_ID}" style="margin-top: 8px; display: none; pointer-events: auto;"> <!-- <<< Re-enable pointer events for container -->
-                 <input type="text" id="${INPUT_ID}" placeholder="Parameter Name (optional)" style="padding: 2px 4px; width: 150px; margin-right: 5px; pointer-events: auto;"> <!-- <<< Re-enable pointer events for input -->
-                 <button id="${PARAM_BTN_ID}" style="padding: 3px 6px; pointer-events: auto;">Set Param & Record</button> <!-- <<< Re-enable pointer events for buttons -->
-            </div>
-        `;
-
-        // --- Attach Button Listeners ---
-        // Reset choice flag before showing
-        window._recorder_user_choice = undefined;
-        window._recorder_parameter_name = undefined;
-
-        document.getElementById('bw-accept-btn').onclick = () => { window._recorder_user_choice = 'accept'; };
-        document.getElementById('bw-skip-btn').onclick = () => { window._recorder_user_choice = 'skip'; /* hidePanel(); */ }; // Optionally hide immediately
-        document.getElementById('bw-abort-btn').onclick = () => { window._recorder_user_choice = 'abort'; /* hidePanel(); */ };
-        document.getElementById(PARAM_BTN_ID).onclick = () => {
-            const inputVal = document.getElementById(INPUT_ID).value.trim();
-            window._recorder_parameter_name = inputVal ? inputVal : null; // Store null if empty
-            window._recorder_user_choice = 'parameterized'; // Special choice for parameterization submit
-            // Don't hide panel here, Python side handles it after retrieving value
-        };
-
-        panel.style.display = 'block'; // Make panel visible
-        console.log('[Recorder Panel] Panel shown.');
-    };
-
-    // --- Function to hide the panel ---
-    window._recorder_hidePanel = () => {
-        const panel = document.getElementById(PANEL_ID);
-        if (panel) {
-            panel.style.display = 'none';
-            console.log('[Recorder Panel] Panel hidden.');
-        }
-         // Also reset choice on hide just in case
-        window._recorder_user_choice = undefined;
-        window._recorder_parameter_name = undefined;
-    };
-
-    // --- Function to show parameterization UI ---
-    window._recorder_showParamUI = (defaultValue) => {
-         const paramContainer = document.getElementById(PARAM_CONT_ID);
-         const inputField = document.getElementById(INPUT_ID);
-         const acceptBtn = document.getElementById('bw-accept-btn');
-         if(paramContainer && inputField && acceptBtn) {
-             inputField.value = ''; // Clear previous value
-             inputField.setAttribute('placeholder', `Param Name for '${defaultValue.substring(0,20)}...' (optional)`);
-             paramContainer.style.display = 'block';
-             // Hide the original "Accept" button, show param button
-             acceptBtn.style.display = 'none';
-             document.getElementById(PARAM_BTN_ID).style.display = 'inline-block'; // Ensure param button is visible
-             console.log('[Recorder Panel] Parameterization UI shown.');
-             return true;
-         }
-         console.error('[Recorder Panel] Could not find parameterization elements.');
-         return false;
-     };
-
-    // --- Function to remove the panel ---
-    window._recorder_removePanel = () => {
-        const panel = document.getElementById(PANEL_ID);
-        if (panel) {
-            panel.remove();
-            console.log('[Recorder Panel] Panel removed.');
-        }
-        // Clean up global flags
-        delete window._recorder_user_choice;
-        delete window._recorder_parameter_name;
-        delete window._recorder_showPanel;
-        delete window._recorder_hidePanel;
-        delete window._recorder_showParamUI;
-        delete window._recorder_removePanel;
-    };
-
-    return true; // Indicate script injection success
-}
-"""
-
 REMOVE_CLICK_LISTENER_JS = """
 () => {
   let removed = false;
@@ -507,11 +183,11 @@ class BrowserController:
         self.default_action_timeout = 9000
         self._dom_service: Optional[DomService] = None
         self.console_messages: List[Dict[str, Any]] = [] # <-- Add list to store messages
-        self._recorder_ui_injected = False # Track if UI script is injected
-        self._panel_interaction_lock = threading.Lock() # Prevent race conditions waiting for panel
         self.viewport_size = viewport_size
         self.network_requests: List[Dict[str, Any]] = []
         self.page_performance_timing: Optional[Dict[str, Any]] = None 
+        
+        self.panel = Panel(headless=headless, page=self.page)
         logger.info(f"BrowserController initialized (headless={headless}).")
         
     def _handle_response(self, response: Response):
@@ -563,230 +239,129 @@ class BrowserController:
         except Exception as e:
              logger.error(f"Error within _handle_request_failed for URL {request.url}: {e}", exc_info=True)
 
-    # inject ui panel onto the browser
-    def inject_recorder_ui_scripts(self):
-        """Injects the JS functions for the recorder UI panel."""
-        if self.headless: return # No UI in headless
+    def _handle_console_message(self, message: ConsoleMessage):
+        """Callback function to handle console messages."""
+        msg_type = message.type
+        msg_text = message.text
+        timestamp = time.time()
+        log_entry = {
+            "timestamp": timestamp,
+            "type": msg_type,
+            "text": msg_text,
+            # Optional: Add location if needed, but can be verbose
+            # "location": message.location()
+        }
+        self.console_messages.append(log_entry)
+        # Optional: Log immediately to agent's log file for real-time debugging
+        log_level = logging.WARNING if msg_type in ['error', 'warning'] else logging.DEBUG
+        logger.log(log_level, f"[CONSOLE.{msg_type.upper()}] {msg_text}")
+
+    def _get_random_user_agent(self):
+        """Provides a random choice from a list of common user agents."""
+        user_agents = [
+            # Chrome on Windows
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+             # Chrome on Mac
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+            # Firefox on Windows
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0',
+            # Add more variations if desired (Edge, Safari etc.)
+        ]
+        return random.choice(user_agents)
+
+    def _get_random_viewport(self):
+        """Provides a slightly randomized common viewport size."""
+        common_sizes = [
+            # {'width': 1280, 'height': 720},
+            # {'width': 1366, 'height': 768},
+            {'width': 800, 'height': 600},
+            # {'width': 1536, 'height': 864},
+        ]
+        base = random.choice(common_sizes)
+        # Add small random offset
+        if not self.viewport_size:
+            base['width'] += random.randint(-10, 10)
+            base['height'] += random.randint(-5, 5)
+        else:
+            base = self.viewport_size
+        return base
+
+    def _find_element(self, selector: str, timeout=None) -> Optional[Locator]:
+        """Finds the first element matching the selector."""
         if not self.page:
-            logger.error("Page not initialized. Cannot inject recorder UI.")
-            return False
-        if self._recorder_ui_injected:
-            logger.debug("Recorder UI scripts already injected.")
-            return True
+             raise PlaywrightError("Browser not started.")
+        effective_timeout = timeout if timeout is not None else self.default_action_timeout
+        logger.debug(f"Attempting to find element: '{selector}' (timeout: {effective_timeout}ms)")
         try:
-            self.page.evaluate(RECORDER_PANEL_JS)
-            self._recorder_ui_injected = True
-            logger.info("Recorder UI panel JavaScript injected successfully.")
-            return True
+             # Use locator().first to explicitly target the first match
+             element = self.page.locator(selector).first
+             # Brief wait for attached state, primary checks in actions
+             element.wait_for(state='attached', timeout=effective_timeout * 0.5)
+             # Scroll into view if needed
+             try:
+                  element.scroll_into_view_if_needed(timeout=effective_timeout * 0.25)
+                  time.sleep(0.1)
+             except Exception as scroll_e:
+                  logger.warning(f"Non-critical: Could not scroll element {selector} into view. Error: {scroll_e}")
+             logger.debug(f"Element found and attached: '{selector}'")
+             return element
+        except PlaywrightTimeoutError:
+             # Don't log as error here, actions will report failure if needed
+             logger.debug(f"Timeout ({effective_timeout}ms) waiting for element state 'attached' or scrolling: '{selector}'.")
+             return None
+        except PlaywrightError as e:
+            logger.error(f"PlaywrightError finding element '{selector}': {e}")
+            return None
         except Exception as e:
-            logger.error(f"Failed to inject recorder UI panel JS: {e}", exc_info=True)
-            return False
-        
-    def show_verification_review_panel(self, planned_desc: str, verification_result: Dict[str, Any]):
-        """Shows the panel for reviewing AI verification results."""
-        if self.headless or not self.page: return
-        try:
-            # Extract data needed by the JS function
-            args = {
-                "plannedDesc": planned_desc,
-                "aiVerified": verification_result.get('verified', False),
-                "aiReasoning": verification_result.get('reasoning', 'N/A'),
-                "assertionType": verification_result.get('assertion_type'),
-                "parameters": verification_result.get('parameters', {}),
-                "selector": verification_result.get('verification_selector') # Use the final selector
-            }
-
-            js_script = f"""
-            (args) => {{
-                ({RECORDER_PANEL_JS})(); // Ensure functions are defined
-                if (window._recorder_showVerificationReviewPanel) {{
-                    window._recorder_showVerificationReviewPanel(args);
-                }} else {{ console.error('Verification review panel function not defined!'); }}
-            }}"""
-            self.page.evaluate(js_script, args)
-        except Exception as e:
-            logger.error(f"Failed to show verification review panel: {e}", exc_info=True)
-    
-    def show_assertion_target_panel(self, planned_desc: str, suggested_selector: Optional[str]):
-        """Shows the panel for confirming/overriding the assertion target."""
-        if self.headless or not self.page: return
-        try:
-            js_script = f"""
-            (args) => {{
-                ({RECORDER_PANEL_JS})(); // Ensure functions are defined
-                if (window._recorder_showAssertionTargetPanel) {{
-                    window._recorder_showAssertionTargetPanel(args.plannedDesc, args.suggestedSelector);
-                }} else {{ console.error('Assertion target panel function not defined!'); }}
-            }}"""
-            self.page.evaluate(js_script, {"plannedDesc": planned_desc, "suggestedSelector": suggested_selector})
-        except Exception as e:
-            logger.error(f"Failed to show assertion target panel: {e}", exc_info=True)
-
-    def show_assertion_type_panel(self, target_selector: str):
-        """Shows the panel for selecting the assertion type."""
-        if self.headless or not self.page: return
-        try:
-            js_script = f"""
-            (args) => {{
-                ({RECORDER_PANEL_JS})(); // Ensure functions are defined
-                if (window._recorder_showAssertionTypePanel) {{
-                    window._recorder_showAssertionTypePanel(args.targetSelector);
-                }} else {{ console.error('Assertion type panel function not defined!'); }}
-            }}"""
-            self.page.evaluate(js_script, {"targetSelector": target_selector})
-        except Exception as e:
-            logger.error(f"Failed to show assertion type panel: {e}", exc_info=True)
-
-    def show_assertion_params_panel(self, target_selector: str, assertion_type: str, param_labels: List[str]):
-        """Shows the panel for entering assertion parameters."""
-        if self.headless or not self.page: return
-        try:
-            js_script = f"""
-            (args) => {{
-                ({RECORDER_PANEL_JS})(); // Ensure functions are defined
-                if (window._recorder_showAssertionParamsPanel) {{
-                    window._recorder_showAssertionParamsPanel(args.targetSelector, args.assertionType, args.paramLabels);
-                }} else {{ console.error('Assertion params panel function not defined!'); }}
-            }}"""
-            self.page.evaluate(js_script, {
-                "targetSelector": target_selector,
-                "assertionType": assertion_type,
-                "paramLabels": param_labels
-            })
-        except Exception as e:
-            logger.error(f"Failed to show assertion params panel: {e}", exc_info=True)
-
-    def get_assertion_parameters_from_panel(self, count: int) -> Optional[Dict[str, str]]:
-        """Retrieves the parameter values entered in the assertion panel."""
-        if self.headless or not self.page: return None
-        try:
-            params = self.page.evaluate("window._recorder_getAssertionParams ? window._recorder_getAssertionParams(count) : null", {"count": count})
-            return params
-        except Exception as e:
-            logger.error(f"Failed to get assertion parameters from panel: {e}")
+            logger.error(f"Unexpected error finding element '{selector}': {e}", exc_info=True)
             return None
 
-    def show_recorder_panel(self, step_description: str, suggestion_text: str):
-        """Shows the recorder UI panel with step info."""
-        if self.headless or not self.page:
-            logger.warning("Cannot show recorder panel (headless or no page).")
-            return
-        try:
-            # Evaluate a script that FIRST defines the functions, THEN calls showPanel
-            js_script = f"""
-            (args) => {{
-                // Ensure panel functions are defined (runs the definitions)
-                ({RECORDER_PANEL_JS})();
-
-                // Now call the show function
-                if (window._recorder_showPanel) {{
-                    window._recorder_showPanel(args.stepDescription, args.suggestionText);
-                }} else {{
-                     console.error('[Recorder Panel] _recorder_showPanel function is still not defined after injection attempt!');
-                }}
-            }}
-            """
-            self.page.evaluate(js_script, {"stepDescription": step_description, "suggestionText": suggestion_text})
-        except Exception as e:
-            logger.error(f"Failed to show recorder panel: {e}", exc_info=True) # Log full trace for debugging
-
-    def hide_recorder_panel(self):
-        """Hides the recorder UI panel if it exists."""
-        if self.headless or not self.page: return
-        try:
-            # Check if function exists before calling
-            self.page.evaluate("if (window._recorder_hidePanel) window._recorder_hidePanel()")
-        except Exception as e:
-            logger.warning(f"Failed to hide recorder panel (might be removed or page navigated): {e}")
-
-    def remove_recorder_panel(self):
-        """Removes the recorder UI panel from the DOM if it exists."""
-        if self.headless or not self.page: return
-        try:
-            # Check if function exists before calling
-            self.page.evaluate("if (window._recorder_removePanel) window._recorder_removePanel()")
-        except Exception as e:
-            logger.warning(f"Failed to remove recorder panel (might be removed or page navigated): {e}")
-
-    def prompt_parameterization_in_panel(self, default_value: str) -> bool:
-        """Shows the parameterization input field, ensuring functions are defined."""
-        if self.headless or not self.page: return False
-        try:
-            # Combine definition and call again
-            js_script = f"""
-            (args) => {{
-                 // Ensure panel functions are defined
-                ({RECORDER_PANEL_JS})();
-
-                // Now call the show param UI function
-                if (window._recorder_showParamUI) {{
-                    return window._recorder_showParamUI(args.defaultValue);
-                }} else {{
-                     console.error('[Recorder Panel] _recorder_showParamUI function is still not defined!');
-                     return false;
-                }}
-            }}
-            """
-            success = self.page.evaluate(js_script, {"defaultValue": default_value})
-            return success if success is True else False # Ensure boolean return
-        except Exception as e:
-            logger.error(f"Failed to show parameterization UI in panel: {e}")
-            return False
-
-    def wait_for_panel_interaction(self, timeout_seconds: float) -> Optional[str]:
+    def _human_like_delay(self, min_secs: float, max_secs: float):
+        """ Sleeps for a random duration within the specified range. """
+        delay = random.uniform(min_secs, max_secs)
+        logger.debug(f"Applying human-like delay: {delay:.2f} seconds")
+        time.sleep(delay)
+        
+    def _get_locator(self, selector: str):
         """
-        Waits for the user to click a button on the recorder panel.
-        Returns the choice ('accept', 'skip', 'abort', 'parameterized') or None on timeout.
+        Gets a Playwright locator for the first matching element,
+        handling potential XPath selectors passed as CSS.
         """
-        if self.headless or not self.page or not self._recorder_ui_injected: return None
+        if not self.page:
+            raise PlaywrightError("Page is not initialized.")
+        if not selector:
+            raise ValueError("Selector cannot be empty.")
 
-        with self._panel_interaction_lock: # Prevent concurrent waits if called rapidly
-            js_condition = "() => window._recorder_user_choice !== undefined"
-            timeout_ms = timeout_seconds * 1000
-            user_choice = None
+        # Basic check to see if it looks like XPath
+        # Playwright's locator handles 'xpath=...' automatically,
+        # but sometimes plain XPaths are passed. Let's try to detect them.
+        is_likely_xpath = selector.startswith(('/', '(', '.')) or \
+                          ('/' in selector and not any(c in selector for c in ['#', '.', '[', '>', '+', '~', '='])) # Avoid CSS chars
 
-            logger.info(f"Waiting up to {timeout_seconds}s for user interaction via UI panel...")
+        processed_selector = selector
+        if is_likely_xpath and not selector.startswith(('css=', 'xpath=')):
+            # If it looks like XPath, explicitly prefix it for Playwright's locator
+            logger.debug(f"Selector '{selector}' looks like XPath. Using explicit 'xpath=' prefix.")
+            processed_selector = f"xpath={selector}"
+        # If it starts with css= or xpath=, Playwright handles it.
+        # Otherwise, it's assumed to be a CSS selector.
 
-            try:
-                # Ensure the flag is initially undefined before waiting
-                self.page.evaluate("window._recorder_user_choice = undefined")
+        try:
+            logger.debug(f"Attempting to create locator using: '{processed_selector}'")
+            # Use .first to always target a single element, consistent with other actions
+            locator = self.page.locator(processed_selector).first
+            return locator
+        except Exception as e:
+            # Catch errors during locator creation itself (e.g., invalid selector syntax)
+            logger.error(f"Failed to create locator for processed selector: '{processed_selector}'. Original: '{selector}'. Error: {e}")
+            # Re-raise using the processed selector in the message for clarity
+            raise PlaywrightError(f"Invalid selector syntax or error creating locator: '{processed_selector}'. Error: {e}") from e
+    
 
-                self.page.wait_for_function(js_condition, timeout=timeout_ms)
-
-                # If wait succeeds, get the choice
-                user_choice = self.page.evaluate("window._recorder_user_choice")
-                logger.info(f"User interaction detected via panel: '{user_choice}'")
-
-            except PlaywrightTimeoutError:
-                logger.warning("Timeout reached waiting for panel interaction.")
-                user_choice = None # Timeout occurred
-            except Exception as e:
-                logger.error(f"Error during page.wait_for_function for panel interaction: {e}", exc_info=True)
-                user_choice = None # Treat other errors as timeout/failure
-            finally:
-                # Reset the flag *immediately after reading or timeout* for the next wait
-                 try:
-                     self.page.evaluate("window._recorder_user_choice = undefined")
-                 except Exception:
-                      logger.warning("Could not reset panel choice flag after interaction/timeout.")
-
-        return user_choice
-
-    def get_parameterization_result(self) -> Optional[str]:
-         """Retrieves the parameter name entered in the panel. Call after wait_for_panel_interaction returns 'parameterized'."""
-         if self.headless or not self.page or not self._recorder_ui_injected: return None
-         try:
-             param_name = self.page.evaluate("window._recorder_parameter_name")
-             # Reset the flag after reading
-             self.page.evaluate("window._recorder_parameter_name = undefined")
-             logger.debug(f"Retrieved parameter name from panel: {param_name}")
-             return param_name # Can be string or null
-         except Exception as e:
-             logger.error(f"Failed to get parameter name from panel: {e}")
-             return None
-
-
-    # Recorder Methods begin =============
+    # Recorder Methods =============
     def setup_click_listener(self) -> bool:
         """Injects JS to listen for the next user click and report the selector."""
         if self.headless:
@@ -860,7 +435,6 @@ class BrowserController:
 
         return selector_result
 
-    # Recorder methods end
 
     # Highlighting elements
     def highlight_element(self, selector: str, index: int, color: str = "#FF0000", text: Optional[str] = None, node_xpath: Optional[str] = None):
@@ -977,6 +551,98 @@ class BrowserController:
         except Exception as e:
             logger.warning(f"Could not clear highlights: {e}")
 
+
+    # Getters
+    def get_structured_dom(self, highlight_all_clickable_elements: bool = True, viewport_expansion: int = 0) -> Optional[DOMState]:
+        """
+        Uses DomService to get a structured representation of the interactive DOM elements.
+
+        Args:
+            highlight_all_clickable_elements: Whether to visually highlight elements in the browser.
+            viewport_expansion: Pixel value to expand the viewport for element detection (0=viewport only, -1=all).
+
+        Returns:
+            A DOMState object containing the element tree and selector map, or None on error.
+        """
+        highlight_all_clickable_elements = False # SETTING TO FALSE TO AVOID CONFUSION WITH NEXT ACTION HIGHLIGHT
+        
+        if not self.page:
+            logger.error("Browser/Page not initialized or DomService unavailable.")
+            return None
+        if not self._dom_service:
+            self._dom_service = DomService(self.page)
+
+
+        # --- RECORDER MODE: Never highlight via JS during DOM build ---
+        # Highlighting is done separately by BrowserController.highlight_element
+        if self.headless == False: # Assume non-headless is recorder mode context
+             highlight_all_clickable_elements = False
+        # --- END RECORDER MODE ---
+        
+        if not self._dom_service:
+            logger.error("DomService unavailable.")
+            return None
+
+        try:
+            logger.info(f"Requesting structured DOM (highlight={highlight_all_clickable_elements}, expansion={viewport_expansion})...")
+            start_time = time.time()
+            dom_state = self._dom_service.get_clickable_elements(
+                highlight_elements=highlight_all_clickable_elements,
+                focus_element=-1, # Not focusing on a specific element for now
+                viewport_expansion=viewport_expansion
+            )
+            end_time = time.time()
+            logger.info(f"Structured DOM retrieved in {end_time - start_time:.2f}s. Found {len(dom_state.selector_map)} interactive elements.")
+            # Generate selectors immediately for recorder use
+            if dom_state and dom_state.selector_map:
+                for node in dom_state.selector_map.values():
+                     if not node.css_selector:
+                           node.css_selector = self.get_selector_for_node(node)
+            return dom_state
+        
+        except Exception as e:
+            logger.error(f"Error getting structured DOM: {type(e).__name__}: {e}", exc_info=True)
+            return None
+    
+    def get_selector_for_node(self, node: DOMElementNode) -> Optional[str]:
+        """Generates a robust CSS selector for a given DOMElementNode."""
+        if not node: return None
+        try:
+            # Use the static method from DomService
+            return DomService._enhanced_css_selector_for_element(node)
+        except Exception as e:
+             logger.error(f"Error generating selector for node {node.xpath}: {e}", exc_info=True)
+             return node.xpath # Fallback to xpath
+    
+    def get_performance_timing(self) -> Optional[Dict[str, Any]]:
+        """Gets the window.performance.timing object from the page."""
+        if not self.page:
+            logger.error("Cannot get performance timing, page not initialized.")
+            return None
+        try:
+            # Evaluate script to get the performance timing object as JSON
+            timing_json = self.page.evaluate("() => JSON.stringify(window.performance.timing)")
+            if timing_json:
+                self.page_performance_timing = json.loads(timing_json) # Store it
+                logger.debug("Retrieved window.performance.timing.")
+                return self.page_performance_timing
+            else:
+                logger.warning("window.performance.timing unavailable or empty.")
+                return None
+        except Exception as e:
+            logger.error(f"Error getting performance timing: {e}", exc_info=True)
+            return None
+
+    def get_current_url(self) -> str:
+        """Returns the current URL of the page."""
+        if not self.page:
+            return "Error: Browser not started."
+        try:
+            return self.page.url
+        except Exception as e:
+            logger.error(f"Error getting current URL: {e}", exc_info=True)
+            return f"Error retrieving URL: {e}"
+
     def get_browser_version(self) -> str:
         if not self.browser:
             return "Unknown"
@@ -1003,115 +669,7 @@ class BrowserController:
              logger.warning("Could not retrieve viewport size.")
              return None
 
-    def _handle_console_message(self, message: ConsoleMessage):
-        """Callback function to handle console messages."""
-        msg_type = message.type
-        msg_text = message.text
-        timestamp = time.time()
-        log_entry = {
-            "timestamp": timestamp,
-            "type": msg_type,
-            "text": msg_text,
-            # Optional: Add location if needed, but can be verbose
-            # "location": message.location()
-        }
-        self.console_messages.append(log_entry)
-        # Optional: Log immediately to agent's log file for real-time debugging
-        log_level = logging.WARNING if msg_type in ['error', 'warning'] else logging.DEBUG
-        logger.log(log_level, f"[CONSOLE.{msg_type.upper()}] {msg_text}")
 
-    def check(self, selector: str): 
-        """Checks a checkbox or radio button."""
-        if not self.page:
-            raise PlaywrightError("Browser not started.")
-        try:
-            logger.info(f"Attempting to check element: {selector}")
-            locator = self.page.locator(selector).first
-            # check() includes actionability checks (visible, enabled)
-            locator.check(timeout=self.default_action_timeout)
-            logger.info(f"Checked element: {selector}")
-            self._human_like_delay(0.2, 0.5) # Small delay after checking
-        except PlaywrightTimeoutError as e:
-            logger.error(f"Timeout ({self.default_action_timeout}ms) waiting for element '{selector}' to be actionable for check.")
-            # Add screenshot on failure
-            screenshot_path = f"output/check_timeout_{selector.replace(' ','_').replace(':','_').replace('>','_')[:30]}_{int(time.time())}.png"
-            self.save_screenshot(screenshot_path)
-            logger.error(f"Saved screenshot on check timeout to: {screenshot_path}")
-            raise PlaywrightTimeoutError(f"Timeout trying to check element: '{selector}'. Check visibility and enabled state. Screenshot: {screenshot_path}") from e
-        except PlaywrightError as e:
-            logger.error(f"PlaywrightError checking element '{selector}': {e}")
-            raise PlaywrightError(f"Failed to check element '{selector}': {e}") from e
-        except Exception as e:
-            logger.error(f"Unexpected error checking '{selector}': {e}", exc_info=True)
-            raise PlaywrightError(f"Unexpected error checking element '{selector}': {e}") from e
-
-    def uncheck(self, selector: str):
-        """Unchecks a checkbox."""
-        if not self.page:
-            raise PlaywrightError("Browser not started.")
-        try:
-            logger.info(f"Attempting to uncheck element: {selector}")
-            locator = self.page.locator(selector).first
-            # uncheck() includes actionability checks
-            locator.uncheck(timeout=self.default_action_timeout)
-            logger.info(f"Unchecked element: {selector}")
-            self._human_like_delay(0.2, 0.5) # Small delay
-        except PlaywrightTimeoutError as e:
-            logger.error(f"Timeout ({self.default_action_timeout}ms) waiting for element '{selector}' to be actionable for uncheck.")
-            screenshot_path = f"output/uncheck_timeout_{selector.replace(' ','_').replace(':','_').replace('>','_')[:30]}_{int(time.time())}.png"
-            self.save_screenshot(screenshot_path)
-            logger.error(f"Saved screenshot on uncheck timeout to: {screenshot_path}")
-            raise PlaywrightTimeoutError(f"Timeout trying to uncheck element: '{selector}'. Screenshot: {screenshot_path}") from e
-        except PlaywrightError as e:
-            logger.error(f"PlaywrightError unchecking element '{selector}': {e}")
-            raise PlaywrightError(f"Failed to uncheck element '{selector}': {e}") from e
-        except Exception as e:
-            logger.error(f"Unexpected error unchecking '{selector}': {e}", exc_info=True)
-            raise PlaywrightError(f"Unexpected error unchecking element '{selector}': {e}") from e
-        
-    def start(self):
-        """Starts Playwright, launches browser, creates context/page, and attaches console listener."""
-        try:
-            logger.info("Starting Playwright...")
-            self.playwright = sync_playwright().start()
-            # Consider adding args for anti-detection if needed:
-            browser_args = ['--disable-blink-features=AutomationControlled']
-            self.browser = self.playwright.chromium.launch(headless=self.headless, args=browser_args)
-            # self.browser = self.playwright.chromium.launch(headless=self.headless)
-
-            self.context = self.browser.new_context(
-                 user_agent=self._get_random_user_agent(),
-                 viewport=self._get_random_viewport(),
-                 ignore_https_errors=True,
-                 java_script_enabled=True,
-                 extra_http_headers=COMMON_HEADERS,
-            )
-            self.context.set_default_navigation_timeout(self.default_navigation_timeout)
-            self.context.set_default_timeout(self.default_action_timeout)
-            self.context.add_init_script(HIDE_WEBDRIVER_SCRIPT)
-
-            self.page = self.context.new_page()
-
-            # Initialize DomService with the created page
-            self._dom_service = DomService(self.page) # Instantiate here
-            
-            # --- Attach Console Listener ---
-            self.page.on('console', self._handle_console_message)
-            logger.info("Attached console message listener.")
-            self.page.on('response', self._handle_response) # <<< Attach network listener
-            logger.info("Attached network response listener.")
-            self.page.on('requestfailed', self._handle_request_failed)
-            logger.info("Attached network failed listener.")
-            self.inject_recorder_ui_scripts() # inject recorder ui
-            
-            # -----------------------------
-            logger.info("Browser context and page created.")
-
-        except Exception as e:
-            logger.error(f"Failed to start Playwright or launch browser: {e}", exc_info=True)
-            self.close() # Ensure cleanup on failure
-            raise
-    
     def get_console_messages(self) -> List[Dict[str, Any]]:
         """Returns a copy of the captured console messages."""
         return list(self.console_messages) # Return a copy
@@ -1131,83 +689,6 @@ class BrowserController:
         self.network_requests = []
 
 
-    def _get_random_user_agent(self):
-        """Provides a random choice from a list of common user agents."""
-        user_agents = [
-            # Chrome on Windows
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
-             # Chrome on Mac
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-            # Firefox on Windows
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0',
-            # Add more variations if desired (Edge, Safari etc.)
-        ]
-        return random.choice(user_agents)
-
-    def _get_random_viewport(self):
-        """Provides a slightly randomized common viewport size."""
-        common_sizes = [
-            # {'width': 1280, 'height': 720},
-            # {'width': 1366, 'height': 768},
-            {'width': 800, 'height': 600},
-            # {'width': 1536, 'height': 864},
-        ]
-        base = random.choice(common_sizes)
-        # Add small random offset
-        if not self.viewport_size:
-            base['width'] += random.randint(-10, 10)
-            base['height'] += random.randint(-5, 5)
-        else:
-            base = self.viewport_size
-        return base
-
-    def close(self):
-        """Closes the browser and stops Playwright."""
-        self.remove_recorder_panel()
-        self.remove_click_listener() 
-        try:
-            if self.page and not self.page.is_closed():
-                try:
-                    self.page.remove_listener('response', self._handle_response) # <<< Remove network listener
-                    logger.debug("Removed network response listener.")
-                except Exception as e: logger.warning(f"Could not remove response listener: {e}")
-                try:
-                    self.page.remove_listener('console', self._handle_console_message)
-                    logger.debug("Removed console message listener.")
-                except Exception as e: logger.warning(f"Could not remove console listener: {e}")
-                try:
-                     self.page.remove_listener('requestfailed', self._handle_request_failed) # <<< Remove requestfailed listener
-                     logger.debug("Removed network requestfailed listener.")
-                except Exception as e: logger.warning(f"Could not remove requestfailed listener: {e}")
-            self._dom_service = None
-            if self.page and not self.page.is_closed():
-                # logger.debug("Closing page...") # Added for clarity
-                self.page.close()
-                # logger.debug("Page closed.")
-            else:
-                logger.debug("Page already closed or not initialized.")
-            if self.context:
-                 self.context.close()
-                 logger.info("Browser context closed.")
-            if self.browser:
-                self.browser.close()
-                logger.info("Browser closed.")
-            if self.playwright:
-                self.playwright.stop()
-                logger.info("Playwright stopped.")
-        except Exception as e:
-            logger.error(f"Error during browser/Playwright cleanup: {e}", exc_info=True)
-        finally:
-            self.page = None
-            self.context = None
-            self.browser = None
-            self.playwright = None
-            self.console_messages = [] # Clear messages on final close
-            self.network_requests = [] # Clear network data on final close
-            self._recorder_ui_injected = False
 
     def validate_assertion(self, assertion_type: str, selector: str, params: Dict[str, Any], timeout_ms: int = 3000) -> Tuple[bool, Optional[str]]:
         """
@@ -1302,86 +783,8 @@ class BrowserController:
             logger.error(err_msg, exc_info=True)
             return False, err_msg
 
-    def get_structured_dom(self, highlight_all_clickable_elements: bool = True, viewport_expansion: int = 0) -> Optional[DOMState]:
-        """
-        Uses DomService to get a structured representation of the interactive DOM elements.
-
-        Args:
-            highlight_all_clickable_elements: Whether to visually highlight elements in the browser.
-            viewport_expansion: Pixel value to expand the viewport for element detection (0=viewport only, -1=all).
-
-        Returns:
-            A DOMState object containing the element tree and selector map, or None on error.
-        """
-        highlight_all_clickable_elements = False # SETTING TO FALSE TO AVOID CONFUSION WITH NEXT ACTION HIGHLIGHT
-        
-        if not self.page:
-            logger.error("Browser/Page not initialized or DomService unavailable.")
-            return None
-        if not self._dom_service:
-            self._dom_service = DomService(self.page)
 
 
-        # --- RECORDER MODE: Never highlight via JS during DOM build ---
-        # Highlighting is done separately by BrowserController.highlight_element
-        if self.headless == False: # Assume non-headless is recorder mode context
-             highlight_all_clickable_elements = False
-        # --- END RECORDER MODE ---
-        
-        if not self._dom_service:
-            logger.error("DomService unavailable.")
-            return None
-
-        try:
-            logger.info(f"Requesting structured DOM (highlight={highlight_all_clickable_elements}, expansion={viewport_expansion})...")
-            start_time = time.time()
-            dom_state = self._dom_service.get_clickable_elements(
-                highlight_elements=highlight_all_clickable_elements,
-                focus_element=-1, # Not focusing on a specific element for now
-                viewport_expansion=viewport_expansion
-            )
-            end_time = time.time()
-            logger.info(f"Structured DOM retrieved in {end_time - start_time:.2f}s. Found {len(dom_state.selector_map)} interactive elements.")
-            # Generate selectors immediately for recorder use
-            if dom_state and dom_state.selector_map:
-                for node in dom_state.selector_map.values():
-                     if not node.css_selector:
-                           node.css_selector = self.get_selector_for_node(node)
-            return dom_state
-        
-        except Exception as e:
-            logger.error(f"Error getting structured DOM: {type(e).__name__}: {e}", exc_info=True)
-            return None
-    
-    def get_selector_for_node(self, node: DOMElementNode) -> Optional[str]:
-        """Generates a robust CSS selector for a given DOMElementNode."""
-        if not node: return None
-        try:
-            # Use the static method from DomService
-            return DomService._enhanced_css_selector_for_element(node)
-        except Exception as e:
-             logger.error(f"Error generating selector for node {node.xpath}: {e}", exc_info=True)
-             return node.xpath # Fallback to xpath
-    
-    def get_performance_timing(self) -> Optional[Dict[str, Any]]:
-        """Gets the window.performance.timing object from the page."""
-        if not self.page:
-            logger.error("Cannot get performance timing, page not initialized.")
-            return None
-        try:
-            # Evaluate script to get the performance timing object as JSON
-            timing_json = self.page.evaluate("() => JSON.stringify(window.performance.timing)")
-            if timing_json:
-                self.page_performance_timing = json.loads(timing_json) # Store it
-                logger.debug("Retrieved window.performance.timing.")
-                return self.page_performance_timing
-            else:
-                logger.warning("window.performance.timing unavailable or empty.")
-                return None
-        except Exception as e:
-            logger.error(f"Error getting performance timing: {e}", exc_info=True)
-            return None
-    
     def goto(self, url: str):
         """Navigates the page to a specific URL."""
         if not self.page:
@@ -1412,31 +815,55 @@ class BrowserController:
             logger.error(f"Unexpected error navigating to {url}: {e}", exc_info=True)
             raise # Re-raise for the agent to handle
 
-    def get_html(self) -> str:
-        """Returns the full HTML content of the current page."""
+    def check(self, selector: str): 
+        """Checks a checkbox or radio button."""
         if not self.page:
-            logger.error("Cannot get HTML, browser not started.")
-            raise Exception("Browser not started.")
+            raise PlaywrightError("Browser not started.")
         try:
-            html = self.page.content()
-            logger.info("Retrieved page HTML content.")
-            # logger.debug(f"HTML content length: {len(html)}")
-            return html
+            logger.info(f"Attempting to check element: {selector}")
+            locator = self.page.locator(selector).first
+            # check() includes actionability checks (visible, enabled)
+            locator.check(timeout=self.default_action_timeout)
+            logger.info(f"Checked element: {selector}")
+            self._human_like_delay(0.2, 0.5) # Small delay after checking
+        except PlaywrightTimeoutError as e:
+            logger.error(f"Timeout ({self.default_action_timeout}ms) waiting for element '{selector}' to be actionable for check.")
+            # Add screenshot on failure
+            screenshot_path = f"output/check_timeout_{selector.replace(' ','_').replace(':','_').replace('>','_')[:30]}_{int(time.time())}.png"
+            self.save_screenshot(screenshot_path)
+            logger.error(f"Saved screenshot on check timeout to: {screenshot_path}")
+            raise PlaywrightTimeoutError(f"Timeout trying to check element: '{selector}'. Check visibility and enabled state. Screenshot: {screenshot_path}") from e
+        except PlaywrightError as e:
+            logger.error(f"PlaywrightError checking element '{selector}': {e}")
+            raise PlaywrightError(f"Failed to check element '{selector}': {e}") from e
         except Exception as e:
-            logger.error(f"Error getting HTML content: {e}", exc_info=True)
-            return f"Error retrieving HTML: {e}"
+            logger.error(f"Unexpected error checking '{selector}': {e}", exc_info=True)
+            raise PlaywrightError(f"Unexpected error checking element '{selector}': {e}") from e
 
-    def get_current_url(self) -> str:
-        """Returns the current URL of the page."""
+    def uncheck(self, selector: str):
+        """Unchecks a checkbox."""
         if not self.page:
-            return "Error: Browser not started."
+            raise PlaywrightError("Browser not started.")
         try:
-            return self.page.url
+            logger.info(f"Attempting to uncheck element: {selector}")
+            locator = self.page.locator(selector).first
+            # uncheck() includes actionability checks
+            locator.uncheck(timeout=self.default_action_timeout)
+            logger.info(f"Unchecked element: {selector}")
+            self._human_like_delay(0.2, 0.5) # Small delay
+        except PlaywrightTimeoutError as e:
+            logger.error(f"Timeout ({self.default_action_timeout}ms) waiting for element '{selector}' to be actionable for uncheck.")
+            screenshot_path = f"output/uncheck_timeout_{selector.replace(' ','_').replace(':','_').replace('>','_')[:30]}_{int(time.time())}.png"
+            self.save_screenshot(screenshot_path)
+            logger.error(f"Saved screenshot on uncheck timeout to: {screenshot_path}")
+            raise PlaywrightTimeoutError(f"Timeout trying to uncheck element: '{selector}'. Screenshot: {screenshot_path}") from e
+        except PlaywrightError as e:
+            logger.error(f"PlaywrightError unchecking element '{selector}': {e}")
+            raise PlaywrightError(f"Failed to uncheck element '{selector}': {e}") from e
         except Exception as e:
-            logger.error(f"Error getting current URL: {e}", exc_info=True)
-            return f"Error retrieving URL: {e}"
-
-
+            logger.error(f"Unexpected error unchecking '{selector}': {e}", exc_info=True)
+            raise PlaywrightError(f"Unexpected error unchecking element '{selector}': {e}") from e
+        
     def take_screenshot(self) -> bytes | None:
         """Takes a screenshot of the current page and returns bytes."""
         if not self.page:
@@ -1467,36 +894,6 @@ class BrowserController:
             logger.error(f"Error saving screenshot to {file_path}: {e}", exc_info=True)
             return False
 
-    def _find_element(self, selector: str, timeout=None) -> Optional[Locator]:
-        """Finds the first element matching the selector."""
-        if not self.page:
-             raise PlaywrightError("Browser not started.")
-        effective_timeout = timeout if timeout is not None else self.default_action_timeout
-        logger.debug(f"Attempting to find element: '{selector}' (timeout: {effective_timeout}ms)")
-        try:
-             # Use locator().first to explicitly target the first match
-             element = self.page.locator(selector).first
-             # Brief wait for attached state, primary checks in actions
-             element.wait_for(state='attached', timeout=effective_timeout * 0.5)
-             # Scroll into view if needed
-             try:
-                  element.scroll_into_view_if_needed(timeout=effective_timeout * 0.25)
-                  time.sleep(0.1)
-             except Exception as scroll_e:
-                  logger.warning(f"Non-critical: Could not scroll element {selector} into view. Error: {scroll_e}")
-             logger.debug(f"Element found and attached: '{selector}'")
-             return element
-        except PlaywrightTimeoutError:
-             # Don't log as error here, actions will report failure if needed
-             logger.debug(f"Timeout ({effective_timeout}ms) waiting for element state 'attached' or scrolling: '{selector}'.")
-             return None
-        except PlaywrightError as e:
-            logger.error(f"PlaywrightError finding element '{selector}': {e}")
-            return None
-        except Exception as e:
-            logger.error(f"Unexpected error finding element '{selector}': {e}", exc_info=True)
-            return None
-    
     def click(self, selector: str):
         """Clicks an element, relying on Playwright's built-in actionability checks."""
         if not self.page:
@@ -1616,130 +1013,93 @@ class BrowserController:
             self._human_like_delay(0.4, 0.8) # Delay after scrolling
         except Exception as e:
             logger.error(f"Error scrolling {direction}: {e}", exc_info=True)
+                    
+
+
+    def start(self):
+        """Starts Playwright, launches browser, creates context/page, and attaches console listener."""
+        try:
+            logger.info("Starting Playwright...")
+            self.playwright = sync_playwright().start()
+            # Consider adding args for anti-detection if needed:
+            browser_args = ['--disable-blink-features=AutomationControlled']
+            self.browser = self.playwright.chromium.launch(headless=self.headless, args=browser_args)
+            # self.browser = self.playwright.chromium.launch(headless=self.headless)
+
+            self.context = self.browser.new_context(
+                 user_agent=self._get_random_user_agent(),
+                 viewport=self._get_random_viewport(),
+                 ignore_https_errors=True,
+                 java_script_enabled=True,
+                 extra_http_headers=COMMON_HEADERS,
+            )
+            self.context.set_default_navigation_timeout(self.default_navigation_timeout)
+            self.context.set_default_timeout(self.default_action_timeout)
+            self.context.add_init_script(HIDE_WEBDRIVER_SCRIPT)
+
+            self.page = self.context.new_page()
+
+            # Initialize DomService with the created page
+            self._dom_service = DomService(self.page) # Instantiate here
             
-    def extract_text(self, selector: str) -> str:
-        """Extracts the text content from the first element matching the selector."""
-        if not self.page:
-            raise PlaywrightError("Browser not started, cannot extract text.")
-        try:
-            logger.info(f"Extracting text from selector: {selector}")
-            locator = self.page.locator(selector).first # Get locator
+            # --- Attach Console Listener ---
+            self.page.on('console', self._handle_console_message)
+            logger.info("Attached console message listener.")
+            self.page.on('response', self._handle_response) # <<< Attach network listener
+            logger.info("Attached network response listener.")
+            self.page.on('requestfailed', self._handle_request_failed)
+            logger.info("Attached network failed listener.")
+            self.panel.inject_recorder_ui_scripts() # inject recorder ui
+            
+            # -----------------------------
+            logger.info("Browser context and page created.")
 
-            # Use text_content() which has implicit waits, but add explicit short wait for visibility first
-            try:
-                 # Wait for element to be at least visible, maybe attached is enough?
-                 # Let's stick to visible for text extraction. Use a shorter timeout.
-                 locator.wait_for(state='visible', timeout=self.default_action_timeout * 0.75)
-            except PlaywrightTimeoutError:
-                 # Element didn't become visible in time
-                 # Check if it exists but is hidden
-                 is_attached = False
-                 try:
-                      is_attached = locator.is_attached() # Check if it's in DOM but hidden
-                 except: pass # Ignore errors here
-
-                 if is_attached:
-                      logger.warning(f"Element '{selector}' found in DOM but is not visible within timeout for text extraction.")
-                      return "Error: Element found but not visible"
-                 else:
-                      error_msg = f"Timeout waiting for element '{selector}' to be visible for text extraction."
-                      logger.error(error_msg)
-                      return f"Error: {error_msg}"
-
-            # If visible, proceed to get text
-            text = locator.text_content() # Get text content
-            if text is None: text = ""
-            logger.info(f"Successfully extracted text from '{selector}': '{text[:100]}...'")
-            return text.strip()
-
-        except PlaywrightError as e: # Catch other Playwright errors during text_content or wait_for
-            logger.error(f"PlaywrightError extracting text from '{selector}': {e}")
-            return f"Error extracting text: {type(e).__name__}: {e}"
         except Exception as e:
-            logger.error(f"Unexpected error extracting text from '{selector}': {e}", exc_info=True)
-            return f"Error extracting text: {type(e).__name__}: {e}"
-
-
-    def extract_attributes(self, selector: str, attributes: List[str]) -> Dict[str, Optional[str]]:
-        """Extracts specified attributes from the first element matching the selector."""
-        if not self.page:
-            raise PlaywrightError("Browser not started.")
-        if not attributes:
-             logger.warning("extract_attributes called with empty attributes list.")
-             return {"error": "No attributes specified for extraction."} # Return error
-
-        result_dict = {}
+            logger.error(f"Failed to start Playwright or launch browser: {e}", exc_info=True)
+            self.close() # Ensure cleanup on failure
+            raise
+    
+    def close(self):
+        """Closes the browser and stops Playwright."""
+        self.panel.remove_recorder_panel()
+        self.remove_click_listener() 
         try:
-            logger.info(f"Extracting attributes {attributes} from selector: {selector}")
-            locator = self.page.locator(selector).first # Get locator
-
-            # Wait briefly for the element to be attached (don't need visibility necessarily for attributes)
-            try:
-                locator.wait_for(state='attached', timeout=self.default_action_timeout * 0.5)
-            except PlaywrightTimeoutError:
-                 error_msg = f"Timeout waiting for element '{selector}' to be attached for attribute extraction."
-                 logger.error(error_msg)
-                 return {"error": error_msg}
-
-            # Element is attached, proceed
-            for attr_name in attributes:
+            if self.page and not self.page.is_closed():
                 try:
-                     # get_attribute doesn't wait, element must exist
-                     attr_value = locator.get_attribute(attr_name)
-                     result_dict[attr_name] = attr_value
-                     logger.debug(f"Extracted attribute '{attr_name}': '{str(attr_value)[:100]}...' from '{selector}'")
-                except Exception as attr_e:
-                     logger.warning(f"Could not extract attribute '{attr_name}' from '{selector}': {attr_e}")
-                     result_dict[attr_name] = f"Error extracting: {attr_e}"
-
-            logger.info(f"Finished extracting attributes {list(result_dict.keys())} from '{selector}'.")
-            return result_dict
-
-        except PlaywrightError as e: # Catch errors from wait_for or get_attribute
-            logger.error(f"PlaywrightError extracting attributes {attributes} from '{selector}': {e}")
-            return {"error": f"PlaywrightError extracting attributes from {selector}: {e}"}
+                    self.page.remove_listener('response', self._handle_response) # <<< Remove network listener
+                    logger.debug("Removed network response listener.")
+                except Exception as e: logger.warning(f"Could not remove response listener: {e}")
+                try:
+                    self.page.remove_listener('console', self._handle_console_message)
+                    logger.debug("Removed console message listener.")
+                except Exception as e: logger.warning(f"Could not remove console listener: {e}")
+                try:
+                     self.page.remove_listener('requestfailed', self._handle_request_failed) # <<< Remove requestfailed listener
+                     logger.debug("Removed network requestfailed listener.")
+                except Exception as e: logger.warning(f"Could not remove requestfailed listener: {e}")
+            self._dom_service = None
+            if self.page and not self.page.is_closed():
+                # logger.debug("Closing page...") # Added for clarity
+                self.page.close()
+                # logger.debug("Page closed.")
+            else:
+                logger.debug("Page already closed or not initialized.")
+            if self.context:
+                 self.context.close()
+                 logger.info("Browser context closed.")
+            if self.browser:
+                self.browser.close()
+                logger.info("Browser closed.")
+            if self.playwright:
+                self.playwright.stop()
+                logger.info("Playwright stopped.")
         except Exception as e:
-            logger.error(f"Unexpected error extracting attributes {attributes} from '{selector}': {e}", exc_info=True)
-            return {"error": f"General error extracting attributes from {selector}: {e}"}
-
-
-    def _human_like_delay(self, min_secs: float, max_secs: float):
-        """ Sleeps for a random duration within the specified range. """
-        delay = random.uniform(min_secs, max_secs)
-        logger.debug(f"Applying human-like delay: {delay:.2f} seconds")
-        time.sleep(delay)
-        
-    def _get_locator(self, selector: str):
-        """
-        Gets a Playwright locator for the first matching element,
-        handling potential XPath selectors passed as CSS.
-        """
-        if not self.page:
-            raise PlaywrightError("Page is not initialized.")
-        if not selector:
-            raise ValueError("Selector cannot be empty.")
-
-        # Basic check to see if it looks like XPath
-        # Playwright's locator handles 'xpath=...' automatically,
-        # but sometimes plain XPaths are passed. Let's try to detect them.
-        is_likely_xpath = selector.startswith(('/', '(', '.')) or \
-                          ('/' in selector and not any(c in selector for c in ['#', '.', '[', '>', '+', '~', '='])) # Avoid CSS chars
-
-        processed_selector = selector
-        if is_likely_xpath and not selector.startswith(('css=', 'xpath=')):
-            # If it looks like XPath, explicitly prefix it for Playwright's locator
-            logger.debug(f"Selector '{selector}' looks like XPath. Using explicit 'xpath=' prefix.")
-            processed_selector = f"xpath={selector}"
-        # If it starts with css= or xpath=, Playwright handles it.
-        # Otherwise, it's assumed to be a CSS selector.
-
-        try:
-            logger.debug(f"Attempting to create locator using: '{processed_selector}'")
-            # Use .first to always target a single element, consistent with other actions
-            locator = self.page.locator(processed_selector).first
-            return locator
-        except Exception as e:
-            # Catch errors during locator creation itself (e.g., invalid selector syntax)
-            logger.error(f"Failed to create locator for processed selector: '{processed_selector}'. Original: '{selector}'. Error: {e}")
-            # Re-raise using the processed selector in the message for clarity
-            raise PlaywrightError(f"Invalid selector syntax or error creating locator: '{processed_selector}'. Error: {e}") from e
+            logger.error(f"Error during browser/Playwright cleanup: {e}", exc_info=True)
+        finally:
+            self.page = None
+            self.context = None
+            self.browser = None
+            self.playwright = None
+            self.console_messages = [] # Clear messages on final close
+            self.network_requests = [] # Clear network data on final close
+            self._recorder_ui_injected = False

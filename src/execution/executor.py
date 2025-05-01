@@ -19,34 +19,6 @@ from ..utils.image_utils import compare_images
 # Define a short timeout specifically for selector validation during healing
 HEALING_SELECTOR_VALIDATION_TIMEOUT_MS = 2000
 
-def get_image_from_bytes(img_bytes: bytes) -> Optional[Image.Image]:
-    """
-    Converts screenshot bytes (like those from page.screenshot() or locator.screenshot())
-    into a PIL Image object.
-
-    Args:
-        img_bytes: The raw bytes of the PNG screenshot.
-
-    Returns:
-        A PIL Image object in RGBA format, or None if conversion fails.
-    """
-    if not img_bytes:
-        logger.warning("get_image_from_bytes called with empty bytes.")
-        return None
-    try:
-        # Create a BytesIO buffer to treat the bytes like a file
-        buffer = io.BytesIO(img_bytes)
-        # Open the image from the buffer using Pillow
-        img = Image.open(buffer)
-        # Ensure the image is in RGBA format for consistency,
-        # especially important for pixel comparisons that might expect an alpha channel.
-        logger.info("received")
-        return img.convert("RGBA")
-    except Exception as e:
-        logger.error(f"Failed to convert bytes to PIL Image: {e}", exc_info=True)
-        return None
-
-
 
 class HealingSelectorSuggestion(BaseModel):
     """Schema for the LLM's suggested replacement selector during healing."""
@@ -108,28 +80,8 @@ class TestExecutor:
         self.pixel_threshold = pixel_threshold # Store threshold
         logger.info(f"TestExecutor initialized (visual baseline dir: {self.baseline_dir}, pixel threshold: {self.pixel_threshold*100:.2f}%)")
         os.makedirs(self.baseline_dir, exist_ok=True) # Ensure baseline dir exists
-        
-        
-    def _load_baseline(self, baseline_id: str) -> Tuple[Optional[Image.Image], Optional[Dict]]:
-        """Loads the baseline image and metadata."""
-        metadata_path = os.path.join(self.baseline_dir, f"{baseline_id}.json")
-        image_path = os.path.join(self.baseline_dir, f"{baseline_id}.png") # Assume PNG
-
-        if not os.path.exists(metadata_path) or not os.path.exists(image_path):
-            logger.error(f"Baseline files not found for ID '{baseline_id}' in {self.baseline_dir}")
-            return None, None
-
-        try:
-            with open(metadata_path, 'r', encoding='utf-8') as f:
-                metadata = json.load(f)
-            baseline_img = Image.open(image_path).convert("RGBA") # Load and ensure RGBA
-            logger.info(f"Loaded baseline '{baseline_id}' (Image: {image_path}, Metadata: {metadata_path})")
-            return baseline_img, metadata
-        except Exception as e:
-            logger.error(f"Error loading baseline files for ID '{baseline_id}': {e}", exc_info=True)
-            return None, None
-
-
+    
+    
     def _get_locator(self, selector: str):
         """Helper to get a Playwright locator, handling potential errors."""
         if not self.page:
@@ -155,6 +107,210 @@ class TestExecutor:
             logger.error(f"Failed to create locator for processed selector: '{processed_selector}'. Original: '{selector}'. Error: {e}")
             # Re-raise using the processed selector in the message for clarity
             raise PlaywrightError(f"Invalid selector syntax or error creating locator: '{processed_selector}'. Error: {e}") from e
+    
+        
+    def _load_baseline(self, baseline_id: str) -> Tuple[Optional[Image.Image], Optional[Dict]]:
+        """Loads the baseline image and metadata."""
+        metadata_path = os.path.join(self.baseline_dir, f"{baseline_id}.json")
+        image_path = os.path.join(self.baseline_dir, f"{baseline_id}.png") # Assume PNG
+
+        if not os.path.exists(metadata_path) or not os.path.exists(image_path):
+            logger.error(f"Baseline files not found for ID '{baseline_id}' in {self.baseline_dir}")
+            return None, None
+
+        try:
+            with open(metadata_path, 'r', encoding='utf-8') as f:
+                metadata = json.load(f)
+            baseline_img = Image.open(image_path).convert("RGBA") # Load and ensure RGBA
+            logger.info(f"Loaded baseline '{baseline_id}' (Image: {image_path}, Metadata: {metadata_path})")
+            return baseline_img, metadata
+        except Exception as e:
+            logger.error(f"Error loading baseline files for ID '{baseline_id}': {e}", exc_info=True)
+            return None, None
+
+    def _attempt_soft_healing(
+            self,
+            failed_step: Dict[str, Any],
+            failed_selector: Optional[str],
+            error_message: str
+        ) -> Tuple[bool, Optional[str], str]:
+        """
+        Attempts to find a new selector using the LLM based on the failed step's context and validate it.
+
+        Returns:
+            Tuple[bool, Optional[str], str]: (healing_success, new_selector, reasoning)
+        """
+        if not self.llm_client:
+            logger.error("Soft Healing: LLMClient not available.")
+            return False, None, "LLMClient not configured for healing."
+        if not self.browser_controller or not self.page:
+             logger.error("Soft Healing: BrowserController or Page not available.")
+             return False, None, "Browser state unavailable for healing."
+
+        logger.info(f"Soft Healing: Gathering context for step {failed_step.get('step_id')}")
+
+        try:
+            current_url = self.browser_controller.get_current_url()
+            screenshot_bytes = self.browser_controller.take_screenshot()
+            dom_state = self.browser_controller.get_structured_dom(highlight_all_clickable_elements=False)
+            dom_context_str = "DOM context could not be retrieved."
+            if dom_state and dom_state.element_tree:
+                dom_context_str, _ = dom_state.element_tree.generate_llm_context_string(context_purpose='verification')
+            else:
+                 logger.warning("Soft Healing: Failed to get valid DOM state.")
+
+            if not screenshot_bytes:
+                 logger.error("Soft Healing: Failed to capture screenshot.")
+                 return False, None, "Failed to capture screenshot for context."
+
+        except Exception as e:
+            logger.error(f"Soft Healing: Error gathering context: {e}", exc_info=True)
+            return False, None, f"Error gathering context: {e}"
+
+        # Construct the prompt
+        prompt = f"""You are an AI Test Self-Healing Assistant. A step in an automated test failed, likely due to an incorrect or outdated CSS selector. Your goal is to analyze the current page state and suggest a more robust replacement selector for the intended element.
+
+**Failed Test Step Information:**
+- Step Description: "{failed_step.get('description', 'N/A')}"
+- Original Action: "{failed_step.get('action', 'N/A')}"
+- Failed Selector: `{failed_selector or 'N/A'}`
+- Error Message: "{error_message}"
+
+**Current Page State:**
+- URL: {current_url}
+- Attached Screenshot: Analyze the visual layout to identify the target element corresponding to the step description.
+- HTML Context (Visible elements, interactive `[index]`, static `(Static)`):
+```html
+{dom_context_str}
+```
+
+**Your Task:**
+1. Based on the step description, the original action, the visual screenshot, AND the HTML context, identify the element the test likely intended to interact with.
+2. Suggest a **single, robust CSS selector** for this element using **NATIVE attributes** (like `id`, `name`, `data-testid`, `data-cy`, `aria-label`, `placeholder`, unique visible text combined with tag, stable class combinations).
+3. **CRITICAL: Do NOT suggest selectors based on `data-ai-id` or unstable attributes (e.g., dynamic classes, complex positional selectors like :nth-child unless absolutely necessary and combined with other stable attributes).**
+4. Prioritize standard, semantic, and test-specific attributes (`id`, `data-testid`, `name`).
+5. If you cannot confidently identify the intended element or find a robust selector, return `null` for `new_selector`.
+
+**Output Format:** Respond ONLY with a JSON object matching the following schema:
+```json
+{{
+  "new_selector": "YOUR_SUGGESTED_CSS_SELECTOR_OR_NULL",
+  "reasoning": "Explain your choice of selector, referencing visual cues, HTML attributes, and the original step description. If returning null, explain why."
+}}
+```
+"""
+
+        try:
+            logger.info("Soft Healing: Requesting selector suggestion from LLM...")
+            response_obj = self.llm_client.generate_json(
+                HealingSelectorSuggestion,
+                prompt,
+                image_bytes=screenshot_bytes
+            )
+
+            if isinstance(response_obj, HealingSelectorSuggestion):
+                if response_obj.new_selector:
+                    suggested_selector = response_obj.new_selector
+                    logger.info(f"Soft Healing: LLM suggested new selector: '{response_obj.new_selector}'. Reasoning: {response_obj.reasoning}")
+                    logger.info(f"Soft Healing: Validating suggested selector '{suggested_selector}'...")
+                    validation_passed = False
+                    validation_reasoning_suffix = ""
+                    try:
+                        # Use page.locator() with a short timeout for existence check
+                        count = self.page.locator(suggested_selector).count()
+
+                        if count > 0:
+                            validation_passed = True
+                            logger.info(f"Soft Healing: Validation PASSED. Selector '{suggested_selector}' found {count} element(s).")
+                            if count > 1:
+                                logger.warning(f"Soft Healing: Suggested selector '{suggested_selector}' found {count} elements (expected 1). Will target the first.")
+                        else: # count == 0
+                            logger.warning(f"Soft Healing: Validation FAILED. Selector '{suggested_selector}' found 0 elements within {HEALING_SELECTOR_VALIDATION_TIMEOUT_MS}ms.")
+                            validation_reasoning_suffix = " [Validation Failed: Selector found 0 elements]"
+
+                    except PlaywrightTimeoutError:
+                         logger.warning(f"Soft Healing: Validation TIMEOUT ({HEALING_SELECTOR_VALIDATION_TIMEOUT_MS}ms) checking selector '{suggested_selector}'.")
+                         validation_reasoning_suffix = f" [Validation Failed: Timeout after {HEALING_SELECTOR_VALIDATION_TIMEOUT_MS}ms]"
+                    except PlaywrightError as e: # Catch invalid selector syntax errors
+                         logger.warning(f"Soft Healing: Validation FAILED. Invalid selector syntax for '{suggested_selector}'. Error: {e}")
+                         validation_reasoning_suffix = f" [Validation Failed: Invalid selector syntax - {e}]"
+                    except Exception as e:
+                         logger.error(f"Soft Healing: Unexpected error during selector validation for '{suggested_selector}': {e}", exc_info=True)
+                         validation_reasoning_suffix = f" [Validation Error: {type(e).__name__}]"
+                    # --- End Validation Step ---
+
+                    # Return success only if validation passed
+                    if validation_passed:
+                        return True, suggested_selector, response_obj.reasoning
+                    else:
+                        # Update reasoning with validation failure details
+                        return False, None, response_obj.reasoning + validation_reasoning_suffix
+
+
+                else:
+                    logger.warning(f"Soft Healing: LLM could not suggest a new selector. Reasoning: {response_obj.reasoning}")
+                    return False, None, response_obj.reasoning
+            elif isinstance(response_obj, str): # LLM returned an error string
+                 logger.error(f"Soft Healing: LLM returned an error: {response_obj}")
+                 return False, None, f"LLM Error: {response_obj}"
+            else: # Unexpected response type
+                 logger.error(f"Soft Healing: Unexpected response type from LLM: {type(response_obj)}")
+                 return False, None, f"Unexpected LLM response type: {type(response_obj)}"
+
+        except Exception as llm_e:
+            logger.error(f"Soft Healing: Error during LLM communication: {llm_e}", exc_info=True)
+            return False, None, f"LLM communication error: {llm_e}"
+        
+    def _trigger_hard_healing(self, feature_description: str, original_file_path: str) -> None:
+        """
+        Closes the current browser and triggers the WebAgent to re-record the test.
+        """
+        logger.warning("--- Triggering Hard Healing (Re-Recording) ---")
+        if not feature_description:
+            logger.error("Hard Healing: Cannot re-record without the original feature description.")
+            return
+        if not self.llm_client:
+            logger.error("Hard Healing: Cannot re-record without an LLMClient.")
+            return
+
+        # 1. Close current browser
+        try:
+            if self.browser_controller:
+                self.browser_controller.close()
+                self.browser_controller = None
+                self.page = None
+                logger.info("Hard Healing: Closed executor browser.")
+        except Exception as close_err:
+            logger.error(f"Hard Healing: Error closing executor browser: {close_err}")
+            # Continue anyway, try to re-record
+
+        # 2. Instantiate Recorder Agent
+        #    NOTE: Assume re-recording is automated. Add flag if interactive needed.
+        try:
+            logger.info("Hard Healing: Initializing WebAgent for automated re-recording...")
+            # Use the existing LLM client
+            recorder_agent = WebAgent(
+                llm_client=self.llm_client,
+                headless=False,  # Re-recording needs visible browser initially
+                is_recorder_mode=True,
+                automated_mode=True, # Run re-recording automatically
+                # Pass original filename stem to maybe overwrite or create variant
+                filename=os.path.splitext(os.path.basename(original_file_path))[0] + "_healed_"
+            )
+
+            # 3. Run Recorder
+            logger.info(f"Hard Healing: Starting re-recording for feature: '{feature_description}'")
+            recording_result = recorder_agent.record(feature_description)
+
+            # 4. Log Outcome
+            if recording_result.get("success"):
+                logger.info(f"✅ Hard Healing: Re-recording successful. New test file saved to: {recording_result.get('output_file')}")
+            else:
+                logger.error(f"❌ Hard Healing: Re-recording FAILED. Message: {recording_result.get('message')}")
+
+        except Exception as record_err:
+            logger.critical(f"❌ Hard Healing: Critical error during re-recording setup or execution: {record_err}", exc_info=True)
+   
 
     def run_test(self, json_file_path: str) -> Dict[str, Any]:
         """Loads and executes the test steps from the JSON file."""
@@ -845,186 +1001,3 @@ class TestExecutor:
 
         return run_status
     
-    
-    def _attempt_soft_healing(
-            self,
-            failed_step: Dict[str, Any],
-            failed_selector: Optional[str],
-            error_message: str
-        ) -> Tuple[bool, Optional[str], str]:
-        """
-        Attempts to find a new selector using the LLM based on the failed step's context and validate it.
-
-        Returns:
-            Tuple[bool, Optional[str], str]: (healing_success, new_selector, reasoning)
-        """
-        if not self.llm_client:
-            logger.error("Soft Healing: LLMClient not available.")
-            return False, None, "LLMClient not configured for healing."
-        if not self.browser_controller or not self.page:
-             logger.error("Soft Healing: BrowserController or Page not available.")
-             return False, None, "Browser state unavailable for healing."
-
-        logger.info(f"Soft Healing: Gathering context for step {failed_step.get('step_id')}")
-
-        try:
-            current_url = self.browser_controller.get_current_url()
-            screenshot_bytes = self.browser_controller.take_screenshot()
-            dom_state = self.browser_controller.get_structured_dom(highlight_all_clickable_elements=False)
-            dom_context_str = "DOM context could not be retrieved."
-            if dom_state and dom_state.element_tree:
-                dom_context_str, _ = dom_state.element_tree.generate_llm_context_string(context_purpose='verification')
-            else:
-                 logger.warning("Soft Healing: Failed to get valid DOM state.")
-
-            if not screenshot_bytes:
-                 logger.error("Soft Healing: Failed to capture screenshot.")
-                 return False, None, "Failed to capture screenshot for context."
-
-        except Exception as e:
-            logger.error(f"Soft Healing: Error gathering context: {e}", exc_info=True)
-            return False, None, f"Error gathering context: {e}"
-
-        # Construct the prompt
-        prompt = f"""You are an AI Test Self-Healing Assistant. A step in an automated test failed, likely due to an incorrect or outdated CSS selector. Your goal is to analyze the current page state and suggest a more robust replacement selector for the intended element.
-
-**Failed Test Step Information:**
-- Step Description: "{failed_step.get('description', 'N/A')}"
-- Original Action: "{failed_step.get('action', 'N/A')}"
-- Failed Selector: `{failed_selector or 'N/A'}`
-- Error Message: "{error_message}"
-
-**Current Page State:**
-- URL: {current_url}
-- Attached Screenshot: Analyze the visual layout to identify the target element corresponding to the step description.
-- HTML Context (Visible elements, interactive `[index]`, static `(Static)`):
-```html
-{dom_context_str}
-```
-
-**Your Task:**
-1. Based on the step description, the original action, the visual screenshot, AND the HTML context, identify the element the test likely intended to interact with.
-2. Suggest a **single, robust CSS selector** for this element using **NATIVE attributes** (like `id`, `name`, `data-testid`, `data-cy`, `aria-label`, `placeholder`, unique visible text combined with tag, stable class combinations).
-3. **CRITICAL: Do NOT suggest selectors based on `data-ai-id` or unstable attributes (e.g., dynamic classes, complex positional selectors like :nth-child unless absolutely necessary and combined with other stable attributes).**
-4. Prioritize standard, semantic, and test-specific attributes (`id`, `data-testid`, `name`).
-5. If you cannot confidently identify the intended element or find a robust selector, return `null` for `new_selector`.
-
-**Output Format:** Respond ONLY with a JSON object matching the following schema:
-```json
-{{
-  "new_selector": "YOUR_SUGGESTED_CSS_SELECTOR_OR_NULL",
-  "reasoning": "Explain your choice of selector, referencing visual cues, HTML attributes, and the original step description. If returning null, explain why."
-}}
-```
-"""
-
-        try:
-            logger.info("Soft Healing: Requesting selector suggestion from LLM...")
-            response_obj = self.llm_client.generate_json(
-                HealingSelectorSuggestion,
-                prompt,
-                image_bytes=screenshot_bytes
-            )
-
-            if isinstance(response_obj, HealingSelectorSuggestion):
-                if response_obj.new_selector:
-                    suggested_selector = response_obj.new_selector
-                    logger.info(f"Soft Healing: LLM suggested new selector: '{response_obj.new_selector}'. Reasoning: {response_obj.reasoning}")
-                    logger.info(f"Soft Healing: Validating suggested selector '{suggested_selector}'...")
-                    validation_passed = False
-                    validation_reasoning_suffix = ""
-                    try:
-                        # Use page.locator() with a short timeout for existence check
-                        count = self.page.locator(suggested_selector).count()
-
-                        if count > 0:
-                            validation_passed = True
-                            logger.info(f"Soft Healing: Validation PASSED. Selector '{suggested_selector}' found {count} element(s).")
-                            if count > 1:
-                                logger.warning(f"Soft Healing: Suggested selector '{suggested_selector}' found {count} elements (expected 1). Will target the first.")
-                        else: # count == 0
-                            logger.warning(f"Soft Healing: Validation FAILED. Selector '{suggested_selector}' found 0 elements within {HEALING_SELECTOR_VALIDATION_TIMEOUT_MS}ms.")
-                            validation_reasoning_suffix = " [Validation Failed: Selector found 0 elements]"
-
-                    except PlaywrightTimeoutError:
-                         logger.warning(f"Soft Healing: Validation TIMEOUT ({HEALING_SELECTOR_VALIDATION_TIMEOUT_MS}ms) checking selector '{suggested_selector}'.")
-                         validation_reasoning_suffix = f" [Validation Failed: Timeout after {HEALING_SELECTOR_VALIDATION_TIMEOUT_MS}ms]"
-                    except PlaywrightError as e: # Catch invalid selector syntax errors
-                         logger.warning(f"Soft Healing: Validation FAILED. Invalid selector syntax for '{suggested_selector}'. Error: {e}")
-                         validation_reasoning_suffix = f" [Validation Failed: Invalid selector syntax - {e}]"
-                    except Exception as e:
-                         logger.error(f"Soft Healing: Unexpected error during selector validation for '{suggested_selector}': {e}", exc_info=True)
-                         validation_reasoning_suffix = f" [Validation Error: {type(e).__name__}]"
-                    # --- End Validation Step ---
-
-                    # Return success only if validation passed
-                    if validation_passed:
-                        return True, suggested_selector, response_obj.reasoning
-                    else:
-                        # Update reasoning with validation failure details
-                        return False, None, response_obj.reasoning + validation_reasoning_suffix
-
-
-                else:
-                    logger.warning(f"Soft Healing: LLM could not suggest a new selector. Reasoning: {response_obj.reasoning}")
-                    return False, None, response_obj.reasoning
-            elif isinstance(response_obj, str): # LLM returned an error string
-                 logger.error(f"Soft Healing: LLM returned an error: {response_obj}")
-                 return False, None, f"LLM Error: {response_obj}"
-            else: # Unexpected response type
-                 logger.error(f"Soft Healing: Unexpected response type from LLM: {type(response_obj)}")
-                 return False, None, f"Unexpected LLM response type: {type(response_obj)}"
-
-        except Exception as llm_e:
-            logger.error(f"Soft Healing: Error during LLM communication: {llm_e}", exc_info=True)
-            return False, None, f"LLM communication error: {llm_e}"
-        
-    def _trigger_hard_healing(self, feature_description: str, original_file_path: str) -> None:
-        """
-        Closes the current browser and triggers the WebAgent to re-record the test.
-        """
-        logger.warning("--- Triggering Hard Healing (Re-Recording) ---")
-        if not feature_description:
-            logger.error("Hard Healing: Cannot re-record without the original feature description.")
-            return
-        if not self.llm_client:
-            logger.error("Hard Healing: Cannot re-record without an LLMClient.")
-            return
-
-        # 1. Close current browser
-        try:
-            if self.browser_controller:
-                self.browser_controller.close()
-                self.browser_controller = None
-                self.page = None
-                logger.info("Hard Healing: Closed executor browser.")
-        except Exception as close_err:
-            logger.error(f"Hard Healing: Error closing executor browser: {close_err}")
-            # Continue anyway, try to re-record
-
-        # 2. Instantiate Recorder Agent
-        #    NOTE: Assume re-recording is automated. Add flag if interactive needed.
-        try:
-            logger.info("Hard Healing: Initializing WebAgent for automated re-recording...")
-            # Use the existing LLM client
-            recorder_agent = WebAgent(
-                llm_client=self.llm_client,
-                headless=False,  # Re-recording needs visible browser initially
-                is_recorder_mode=True,
-                automated_mode=True, # Run re-recording automatically
-                # Pass original filename stem to maybe overwrite or create variant
-                filename=os.path.splitext(os.path.basename(original_file_path))[0] + "_healed_"
-            )
-
-            # 3. Run Recorder
-            logger.info(f"Hard Healing: Starting re-recording for feature: '{feature_description}'")
-            recording_result = recorder_agent.record(feature_description)
-
-            # 4. Log Outcome
-            if recording_result.get("success"):
-                logger.info(f"✅ Hard Healing: Re-recording successful. New test file saved to: {recording_result.get('output_file')}")
-            else:
-                logger.error(f"❌ Hard Healing: Re-recording FAILED. Message: {recording_result.get('message')}")
-
-        except Exception as record_err:
-            logger.critical(f"❌ Hard Healing: Critical error during re-recording setup or execution: {record_err}", exc_info=True)

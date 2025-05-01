@@ -32,18 +32,7 @@ TEST_OUTPUT_DIR = "output"
 # --- Initialize FastMCP Server ---
 mcp = FastMCP("WebTestAgentServer")
 
-# --- Helper to Load API Key ---
-# Cache the key to avoid loading it repeatedly within the server's lifetime
-API_KEY = None
-def get_api_key() -> str:
-    global API_KEY
-    if API_KEY is None:
-        try:
-            API_KEY = load_api_key()
-        except ValueError as e:
-            logger.error(f"Failed to load API key: {e}")
-            raise  # Re-raise to prevent server from running without key
-    return API_KEY
+llm_client = LLMClient(provider='azure')
 
 # --- MCP Tool: Record a New Test Flow (Automated - Requires Agent Refactoring) ---
 @mcp.tool()
@@ -63,17 +52,8 @@ async def record_test_flow(feature_description: str, project_directory: str, hea
     """
     logger.info(f"Received automated request to record test flow: '{feature_description[:100]}...' (Headless: {headless})")
     try:
-        # 1. Initialize required components
-        api_key = get_api_key()
-        # llm_client = LLMClient(gemini_api_key=api_key, provider='gemini')
-        api_version = load_api_version();
-        api_model = load_llm_model();
-        api_base_url = load_api_base_url();
-
-        if api_version:
-            llm_client = LLMClient(provider='LLM', LLM_api_key=api_key, LLM_api_version=api_version, LLM_endpoint=api_base_url, LLM_model_name=api_model, LLM_vision_model_name=api_model)
         
-        # 2. Instantiate WebAgent in AUTOMATED mode
+        # 1. Instantiate WebAgent in AUTOMATED mode
         recorder_agent = WebAgent(
             llm_client=llm_client,
             headless=headless, # Allow MCP tool to specify headless
@@ -116,15 +96,6 @@ async def run_regression_test(test_file_path: str, headless: bool = True, enable
     """
     logger.info(f"Received request to run regression test: '{test_file_path}', Headless: {headless}")
 
-    api_key = get_api_key()
-    # llm_client = LLMClient(gemini_api_key=api_key, provider='gemini')
-    api_version = load_api_version();
-    api_model = load_llm_model();
-    api_base_url = load_api_base_url();
-    if api_version:
-        llm_client = LLMClient(provider='LLM', LLM_api_key=api_key, LLM_api_version=api_version, LLM_endpoint=api_base_url, LLM_model_name=api_model, LLM_vision_model_name=api_model)
-
-    
     # Basic path validation (relative to server or absolute)
     if not os.path.isabs(test_file_path):
         # Assume relative to the server's working directory or a known output dir
@@ -202,17 +173,13 @@ async def discover_test_flows(start_url: str, max_pages_to_crawl: int = 10, head
     logger.info(f"Received request to discover test flows starting from: '{start_url}', Max Pages: {max_pages_to_crawl}, Headless: {headless}")
 
     try:
-        # 1. Initialize required components
-        api_key = get_api_key()
-        llm_client = LLMClient(gemini_api_key=api_key, provider='gemini')
-
-        # 2. Instantiate CrawlerAgent
+        # 1. Instantiate CrawlerAgent
         crawler = CrawlerAgent(
             llm_client=llm_client,
             headless=headless
         )
 
-        # 3. Run the blocking crawl method in a separate thread
+        # 2. Run the blocking crawl method in a separate thread
         logger.info("Delegating crawler execution to a separate thread...")
         crawl_results = await asyncio.to_thread(
             crawler.crawl_and_suggest,
