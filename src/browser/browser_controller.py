@@ -1,5 +1,5 @@
 # /src/browser/browser_controller.py
-from playwright.sync_api import sync_playwright, Page, Browser, Playwright, TimeoutError as PlaywrightTimeoutError, Error as PlaywrightError, Response, Request, Locator, ConsoleMessage, expect
+from patchright.sync_api import sync_playwright, Page, Browser, Playwright, TimeoutError as PlaywrightTimeoutError, Error as PlaywrightError, Response, Request, Locator, ConsoleMessage, expect
 import logging
 import time
 import random

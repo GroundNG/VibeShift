@@ -21,7 +21,7 @@ from .views import (
 # from ..utils import time_execution_async # Example relative import if utils is one level up
 
 if TYPE_CHECKING:
-    from playwright.sync_api import Page # Use sync_api for this repo
+    from patchright.sync_api import Page # Use sync_api for this repo
 
 logger = logging.getLogger(__name__)
 

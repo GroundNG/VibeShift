@@ -3,7 +3,7 @@ import json
 import logging
 import time
 import os
-from playwright.sync_api import sync_playwright, Page, TimeoutError as PlaywrightTimeoutError, Error as PlaywrightError, expect
+from patchright.sync_api import sync_playwright, Page, TimeoutError as PlaywrightTimeoutError, Error as PlaywrightError, expect
 from typing import Optional, Dict, Any, Tuple, List
 from pydantic import BaseModel, Field
 import re

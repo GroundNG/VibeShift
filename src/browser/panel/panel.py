@@ -2,7 +2,7 @@
 import threading
 import logging
 from typing import Optional, Dict, Any, List
-from playwright.sync_api import sync_playwright, Page, Browser, Playwright, TimeoutError as PlaywrightTimeoutError
+from patchright.sync_api import sync_playwright, Page, Browser, Playwright, TimeoutError as PlaywrightTimeoutError
 
 logger = logging.getLogger(__name__)
 

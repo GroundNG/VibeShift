@@ -1,9 +1,10 @@
 # /src/recorder_agent.py
 import json
+from importlib import resources
 import logging
 import time
 import re
-from playwright.sync_api import Error as PlaywrightError, TimeoutError as PlaywrightTimeoutError
+from patchright.sync_api import Error as PlaywrightError, TimeoutError as PlaywrightTimeoutError
 from typing import Dict, Any, Optional, List, Tuple, Union, Literal
 import random
 import os
@@ -670,6 +671,68 @@ Now, generate the verification JSON for: "{verification_description}"
                     verification_dict.pop("assertion_type", None)
                     verification_dict.pop("parameters", None)
 
+                if final_selector and target_node and self.browser_controller.page:
+                    try:
+                        handles = self.browser_controller.page.query_selector_all(final_selector)
+                        num_matches = len(handles)
+                        validation_passed = False
+
+                        if num_matches == 1:
+                            # Get XPath of the element found by the generated selector
+                            
+                            try:
+                                with resources.files(__package__).joinpath('js_utils', 'xpathgenerator.js') as js_path:
+                                    js_code = js_path.read_text(encoding='utf-8')
+                                    logger.debug("xpathgenerator.js loaded successfully.")
+                            except FileNotFoundError:
+                                logger.error("xpathgenerator.js not found in the 'agents' package directory!")
+                                raise
+                            except Exception as e:
+                                logger.error(f"Error loading xpathgenerator.js: {e}", exc_info=True)
+                                raise
+
+                            # Pass a *function string* to evaluate. Playwright passes the handle as 'element'.
+                            # The function string first defines our helper, then calls it.
+                            script_to_run = f"""
+                                (element) => {{
+                                    {js_code} // Define the helper function(s)
+                                    return generateXPathForElement(element); // Call it
+                                }}
+                            """
+
+                            # Use page.evaluate, passing the script string and the element handle
+                            matched_xpath = self.browser_controller.page.evaluate(script_to_run, handles[0])
+
+                            # Compare XPaths (simplest reliable comparison)
+                            if target_node.xpath == matched_xpath:
+                                validation_passed = True
+                                logger.info(f"Validation PASSED: Selector '{final_selector}' uniquely matches target node.")
+                            else:
+                                logger.warning(f"Validation FAILED: Selector '{final_selector}' matched 1 element, but its XPath ('{matched_xpath}') differs from target node XPath ('{target_node.xpath}').")
+                        elif num_matches == 0:
+                            logger.warning(f"Validation FAILED: Selector '{final_selector}' matched 0 elements.")
+                        else: # num_matches > 1
+                            logger.warning(f"Validation FAILED: Selector '{final_selector}' matched {num_matches} elements (not unique).")
+
+                        # --- Fallback to XPath if validation failed ---
+                        if not validation_passed:
+                            logger.warning(f"Falling back to XPath selector for target node.")
+                            original_selector = final_selector # Keep for logging/reasoning
+                            final_selector = f"xpath={target_node.xpath}"
+                            # Update reasoning if possible
+                            if "reasoning" in verification_dict:
+                                verification_dict["reasoning"] += f" [Note: CSS selector ('{original_selector}') failed validation, using XPath fallback.]"
+                            # Update the selector in the dictionary being built
+                            verification_dict["verification_selector"] = final_selector
+
+                    except Exception as validation_err:
+                        logger.error(f"Error during selector validation ('{final_selector}'): {validation_err}. Falling back to XPath.")
+                        original_selector = final_selector
+                        final_selector = f"xpath={target_node.xpath}"
+                        if "reasoning" in verification_dict:
+                            verification_dict["reasoning"] += f" [Note: Error validating CSS selector ('{original_selector}'), using XPath fallback.]"
+                        verification_dict["verification_selector"] = final_selector
+                
                 # --- Post-hoc validation (same as before, applied to final verification_dict) ---
                 if verification_dict.get("verified"):
                     assertion_type = verification_dict.get("assertion_type")
@@ -1329,6 +1392,66 @@ Respond ONLY with the JSON object matching the schema.
                       logger.error(f"Could not generate selector for suggested index [{target_index}] (Node: {target_node.tag_name}).")
                       return {"action": "suggestion_failed", "parameters": {}, "reasoning": f"Failed to generate CSS selector for suggested index [{target_index}]."}
 
+            if suggested_selector and target_node and self.browser_controller.page:
+                try:
+                    handles = self.browser_controller.page.query_selector_all(suggested_selector)
+                    num_matches = len(handles)
+                    validation_passed = False
+
+                    if num_matches == 1:
+                        # Get XPath of the element found by the generated selector
+                        # Note: Requires a reliable JS function 'generateXPath' accessible in evaluate
+                        try:
+                            with resources.files(__package__).joinpath('js_utils', 'xpathgenerator.js') as js_path:
+                                js_code = js_path.read_text(encoding='utf-8')
+                                logger.debug("xpathgenerator.js loaded successfully.")
+                        except FileNotFoundError:
+                            logger.error("xpathgenerator.js not found in the 'agents' package directory!")
+                            raise
+                        except Exception as e:
+                            logger.error(f"Error loading xpathgenerator.js: {e}", exc_info=True)
+                            raise
+
+                        # Pass a *function string* to evaluate. Playwright passes the handle as 'element'.
+                        # The function string first defines our helper, then calls it.
+                        script_to_run = f"""
+                            (element) => {{
+                                {js_code} // Define the helper function(s)
+                                return generateXPathForElement(element); // Call it
+                            }}
+                        """
+
+                        # Use page.evaluate, passing the script string and the element handle
+                        matched_xpath = self.browser_controller.page.evaluate(script_to_run, handles[0])
+
+                        # Compare XPaths
+                        if target_node.xpath == matched_xpath:
+                            validation_passed = True
+                            logger.info(f"Validation PASSED: Suggested selector '{suggested_selector}' uniquely matches target node [{target_index}].")
+                        else:
+                            logger.warning(f"Validation FAILED: Suggested selector '{suggested_selector}' matched 1 element, but its XPath ('{matched_xpath}') differs from target node XPath ('{target_node.xpath}').")
+                    elif num_matches == 0:
+                        logger.warning(f"Validation FAILED: Suggested selector '{suggested_selector}' matched 0 elements.")
+                    else: # num_matches > 1
+                        logger.warning(f"Validation FAILED: Suggested selector '{suggested_selector}' matched {num_matches} elements (not unique).")
+
+                    # --- Fallback to XPath if validation failed ---
+                    if not validation_passed:
+                        logger.warning(f"Falling back to XPath selector for target node [{target_index}].")
+                        original_selector = suggested_selector
+                        suggested_selector = f"xpath={target_node.xpath}"
+                        # Update the suggestion dictionary
+                        suggestion_dict["suggested_selector"] = suggested_selector
+                        suggestion_dict["reasoning"] = suggestion_dict.get("reasoning", "") + f" [Note: CSS selector ('{original_selector}') failed validation, using XPath fallback.]"
+
+                except Exception as validation_err:
+                    logger.error(f"Error during selector validation ('{suggested_selector}'): {validation_err}. Falling back to XPath.")
+                    original_selector = suggested_selector
+                    suggested_selector = f"xpath={target_node.xpath}"
+                    # Update the suggestion dictionary
+                    suggestion_dict["suggested_selector"] = suggested_selector
+                    suggestion_dict["reasoning"] = suggestion_dict.get("reasoning", "") + f" [Note: Error validating CSS selector ('{original_selector}'), using XPath fallback.]"
+            
             logger.info(f"LLM suggested index [{target_index}], resolved to selector: '{suggested_selector}'")
             # Add resolved selector and node to the dictionary returned
             suggestion_dict["suggested_selector"] = suggested_selector

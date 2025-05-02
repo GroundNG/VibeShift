@@ -9,3 +9,4 @@ pytest-html
 mcp[cli]
 pixelmatch>=0.3.0
 openai
+patchright
