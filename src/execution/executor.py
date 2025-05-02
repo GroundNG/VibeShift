@@ -152,7 +152,7 @@ class TestExecutor:
         try:
             current_url = self.browser_controller.get_current_url()
             screenshot_bytes = self.browser_controller.take_screenshot()
-            dom_state = self.browser_controller.get_structured_dom(highlight_all_clickable_elements=False)
+            dom_state = self.browser_controller.get_structured_dom(highlight_all_clickable_elements=False, viewport_expansion=-1)
             dom_context_str = "DOM context could not be retrieved."
             if dom_state and dom_state.element_tree:
                 dom_context_str, _ = dom_state.element_tree.generate_llm_context_string(context_purpose='verification')
@@ -734,7 +734,7 @@ class TestExecutor:
                             current_url = self.browser_controller.get_current_url()
                             dom_context_str = "DOM context could not be retrieved." # Default
                             try:
-                                dom_state = self.browser_controller.get_structured_dom(highlight_all_clickable_elements=False) # No highlight during execution verification
+                                dom_state = self.browser_controller.get_structured_dom(highlight_all_clickable_elements=False, viewport_expansion=-1) # No highlight during execution verification
                                 if dom_state and dom_state.element_tree:
                                     # Use 'verification' purpose for potentially richer context
                                     dom_context_str, _ = dom_state.element_tree.generate_llm_context_string(context_purpose='verification')

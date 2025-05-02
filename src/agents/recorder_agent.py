@@ -2156,7 +2156,7 @@ Respond ONLY with the JSON object matching the schema.
                 try:
                     current_url = self.browser_controller.get_current_url()
                     # Always try to get DOM state
-                    self._latest_dom_state = self.browser_controller.get_structured_dom(highlight_all_clickable_elements=False)
+                    self._latest_dom_state = self.browser_controller.get_structured_dom(highlight_all_clickable_elements=False, viewport_expansion=-1)
                     if self._latest_dom_state and self._latest_dom_state.element_tree:
                         dom_context_str, static_id_map = self._latest_dom_state.element_tree.generate_llm_context_string(context_purpose='verification')
                         self._last_static_id_map = static_id_map
