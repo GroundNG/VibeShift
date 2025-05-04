@@ -11,6 +11,7 @@ from src.agents.crawler_agent import CrawlerAgent
 from src.llm.llm_client import LLMClient
 from src.execution.executor import TestExecutor
 from src.utils.utils import load_api_key, load_api_version, load_api_base_url, load_llm_model
+from src.agents.auth_agent import record_selectors_and_save_auth_state
 import logging
 import warnings
 
@@ -28,7 +29,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="AI Web Testing Agent - Recorder & Executor")
     parser.add_argument(
         '--mode',
-        choices=['record', 'execute', 'discover'],
+        choices=['record', 'execute','auth' ,'discover'],
         required=True,
         help="Mode to run the agent in: 'record' (interactive AI-assisted recording) or 'execute' (deterministic playback)."
     )
@@ -400,7 +401,34 @@ if __name__ == "__main__":
                 except Exception as save_err:
                      logger.error(f"Failed to save full discovery result JSON: {save_err}")
 
+        elif args.mode == 'auth':
+            # Ensure output directory exists
+            os.makedirs("output", exist_ok=True)
 
+            # --- IMPORTANT: Initialize your LLM Client here ---
+            # Replace with your actual LLM provider and initialization
+            try:
+                # Example using Gemini (replace with your actual setup)
+                # Ensure GOOGLE_API_KEY is set as an environment variable if using GeminiClient defaults
+                logger.info(f"Using LLM Provider: {args.provider}")
+                llm = LLMClient(provider=args.provider)
+                logger.info("LLM Client initialized.")
+            except ValueError as e:
+                logger.error(f"❌ Failed to initialize LLM Client: {e}. Cannot proceed.")
+                llm = None
+            except Exception as e:
+                logger.error(f"❌ An unexpected error occurred initializing LLM Client: {e}. Cannot proceed.", exc_info=True)
+                llm = None
+            # ------------------------------------------------
+
+            if llm:
+                success = record_selectors_and_save_auth_state(llm, args.url, args.file)
+                if success:
+                    print(f"\n--- Authentication state generation completed successfully. ---")
+                else:
+                    print(f"\n--- Authentication state generation failed. Check logs and screenshots in 'output/'. ---")
+            else:
+                print("\n--- Could not initialize LLM Client. Aborting authentication state generation. ---")
 
 
 

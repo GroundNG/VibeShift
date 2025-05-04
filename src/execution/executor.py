@@ -454,6 +454,27 @@ class TestExecutor:
                             logger.info(f"Selecting option by {param_type} in element: {current_selector}")
                             locator = self._get_locator(current_selector)
                             locator.select_option(**option_param, timeout=self.default_timeout)
+                        elif action == "wait": # Generic wait action
+                            timeout_s = params.get("timeout_seconds")
+                            target_url = params.get("url")
+                            element_state = params.get("state") # e.g., 'visible', 'hidden'
+                            wait_selector = current_selector # Use current (potentially healed) selector if waiting for element
+
+                            if timeout_s is not None and not target_url and not element_state:
+                                # Simple time wait
+                                logger.info(f"Waiting for {timeout_s} seconds...")
+                                self.page.wait_for_timeout(timeout_s * 1000)
+                            elif wait_selector and element_state:
+                                # Wait for element state
+                                logger.info(f"Waiting for element '{wait_selector}' to be '{element_state}' (max {self.default_timeout}ms)...")
+                                locator = self._get_locator(wait_selector)
+                                locator.wait_for(state=element_state, timeout=self.default_timeout)
+                            elif target_url:
+                                # Wait for URL
+                                logger.info(f"Waiting for URL matching '{target_url}' (max {self.browser_controller.default_navigation_timeout}ms)...")
+                                self.page.wait_for_url(target_url, timeout=self.browser_controller.default_navigation_timeout)
+                            else:
+                                raise ValueError("Invalid parameters for 'wait' action. Need timeout_seconds OR (selector and state) OR url.")
                         elif action == "wait_for_load_state":
                             state = params.get("state", "load")
                             self.page.wait_for_load_state(state, timeout=self.browser_controller.default_navigation_timeout) # Use navigation timeout
@@ -463,6 +484,25 @@ class TestExecutor:
                             if not current_selector: raise ValueError("Missing 'current_selector' for wait_for_selector.")
                             locator = self._get_locator(current_selector)
                             locator.wait_for(state=wait_state, timeout=timeout)
+                        elif action == "key_press":
+                            keys = params.get("keys")
+                            if not current_selector: raise ValueError("Missing 'selector' for key_press.")
+                            if not keys: raise ValueError("Missing 'keys' parameter for key_press.")
+                            # Use controller method or locator directly
+                            locator = self._get_locator(current_selector)
+                            locator.press(keys, timeout=self.default_timeout)
+                            # self.browser_controller.press(current_selector, keys) # Alt: if using controller method
+                        elif action == "drag_and_drop":
+                            target_selector = params.get("target_selector")
+                            source_selector = current_selector # Source is in the main 'selector' field
+                            if not source_selector: raise ValueError("Missing source 'selector' for drag_and_drop.")
+                            if not target_selector: raise ValueError("Missing 'target_selector' in parameters for drag_and_drop.")
+                            # Use controller method or locators directly
+                            source_locator = self._get_locator(source_selector)
+                            target_locator = self._get_locator(target_selector)
+                            source_locator.drag_to(target_locator, timeout=self.default_timeout)
+                            # self.browser_controller.drag_and_drop(source_selector, target_selector) # Alt: if using controller
+
                         # --- Assertions ---
                         elif action == "assert_text_contains":
                             expected_text = params.get("expected_text")

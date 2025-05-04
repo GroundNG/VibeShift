@@ -173,7 +173,7 @@ REMOVE_CLICK_LISTENER_JS = """
 class BrowserController:
     """Handles Playwright browser automation tasks, including console message capture."""
 
-    def __init__(self, headless=True, viewport_size=None):
+    def __init__(self, headless=True, viewport_size=None, auth_state_path: Optional[str] = None):
         self.playwright: Playwright | None = None
         self.browser: Browser | None = None
         self.context: Optional[Any] = None # Keep context reference
@@ -186,6 +186,7 @@ class BrowserController:
         self.viewport_size = viewport_size
         self.network_requests: List[Dict[str, Any]] = []
         self.page_performance_timing: Optional[Dict[str, Any]] = None 
+        self.auth_state_path = auth_state_path
         
         self.panel = Panel(headless=headless, page=self.page)
         logger.info(f"BrowserController initialized (headless={headless}).")
@@ -983,7 +984,114 @@ class BrowserController:
             self._human_like_delay(0.4, 0.8) # Delay after scrolling
         except Exception as e:
             logger.error(f"Error scrolling {direction}: {e}", exc_info=True)
-                    
+        
+    def press(self, selector: str, keys: str):
+        """Presses key(s) on a specific element."""
+        if not self.page:
+            raise PlaywrightError("Browser not started.")
+        try:
+            logger.info(f"Attempting to press '{keys}' on element: {selector}")
+            locator = self._get_locator(selector)
+            # Ensure element is actionable first (visible, enabled) before pressing
+            expect(locator).to_be_enabled(timeout=self.default_action_timeout / 2) # Quick check
+            expect(locator).to_be_visible(timeout=self.default_action_timeout / 2)
+            locator.press(keys, timeout=self.default_action_timeout)
+            logger.info(f"Pressed '{keys}' on element: {selector}")
+            self._human_like_delay(0.2, 0.6) # Small delay after key press
+        except (PlaywrightTimeoutError, PlaywrightError, AssertionError) as e: # Catch expect failures too
+            error_msg = f"Timeout or error pressing '{keys}' on element '{selector}': {type(e).__name__} - {e}"
+            logger.error(error_msg)
+            screenshot_path = f"output/press_fail_{selector.replace(' ','_').replace(':','_').replace('>','_')[:30]}_{int(time.time())}.png"
+            self.save_screenshot(screenshot_path)
+            logger.error(f"Saved screenshot on press failure to: {screenshot_path}")
+            raise PlaywrightError(f"{error_msg}. Screenshot: {screenshot_path}") from e
+        except Exception as e:
+            logger.error(f"Unexpected error pressing '{keys}' on '{selector}': {e}", exc_info=True)
+            raise PlaywrightError(f"Unexpected error pressing '{keys}' on element '{selector}': {e}") from e
+
+    def drag_and_drop(self, source_selector: str, target_selector: str):
+        """Drags an element defined by source_selector to an element defined by target_selector."""
+        if not self.page:
+            raise PlaywrightError("Browser not started.")
+        try:
+            logger.info(f"Attempting to drag '{source_selector}' to '{target_selector}'")
+            source_locator = self._get_locator(source_selector)
+            target_locator = self._get_locator(target_selector)
+
+            # Optional: Check visibility/existence before drag attempt
+            expect(source_locator).to_be_visible(timeout=self.default_action_timeout / 2)
+            expect(target_locator).to_be_visible(timeout=self.default_action_timeout / 2)
+
+            # Perform drag_to with default timeout
+            source_locator.drag_to(target_locator, timeout=self.default_action_timeout)
+            logger.info(f"Successfully dragged '{source_selector}' to '{target_selector}'")
+            self._human_like_delay(0.5, 1.2) # Delay after drag/drop
+        except (PlaywrightTimeoutError, PlaywrightError, AssertionError) as e:
+            error_msg = f"Timeout or error dragging '{source_selector}' to '{target_selector}': {type(e).__name__} - {e}"
+            logger.error(error_msg)
+            screenshot_path = f"output/drag_fail_{source_selector.replace(' ','_')[:20]}_{target_selector.replace(' ','_')[:20]}_{int(time.time())}.png"
+            self.save_screenshot(screenshot_path)
+            logger.error(f"Saved screenshot on drag failure to: {screenshot_path}")
+            raise PlaywrightError(f"{error_msg}. Screenshot: {screenshot_path}") from e
+        except Exception as e:
+            logger.error(f"Unexpected error dragging '{source_selector}' to '{target_selector}': {e}", exc_info=True)
+            raise PlaywrightError(f"Unexpected error dragging '{source_selector}' to '{target_selector}': {e}") from e
+
+    def wait(self,
+             timeout_seconds: Optional[float] = None,
+             selector: Optional[str] = None,
+             state: Optional[str] = None, # 'visible', 'hidden', 'enabled', 'disabled', 'attached', 'detached'
+             url: Optional[str] = None, # String, regex, or function
+            ):
+        """Performs various types of waits based on provided parameters."""
+        if not self.page:
+            raise PlaywrightError("Browser not started.")
+ 
+        try:
+            if timeout_seconds is not None and selector is None and state is None and url is None:
+                # Simple time wait
+                logger.info(f"Waiting for {timeout_seconds:.2f} seconds...")
+                self.page.wait_for_timeout(timeout_seconds * 1000)
+                logger.info(f"Wait finished after {timeout_seconds:.2f} seconds.")
+ 
+            elif selector and state:
+                # Wait for element state
+                wait_timeout = self.default_action_timeout # Use default action timeout for element waits
+                logger.info(f"Waiting for element '{selector}' to be '{state}' (max {wait_timeout}ms)...")
+                locator = self._get_locator(selector) # Handles potential errors
+                locator.wait_for(state=state, timeout=wait_timeout)
+                logger.info(f"Wait finished: Element '{selector}' is now '{state}'.")
+ 
+            elif url:
+                # Wait for URL
+                wait_timeout = self.default_navigation_timeout # Use navigation timeout for URL waits
+                logger.info(f"Waiting for URL matching '{url}' (max {wait_timeout}ms)...")
+                self.page.wait_for_url(url, timeout=wait_timeout)
+                logger.info(f"Wait finished: URL now matches '{url}'.")
+ 
+            else:
+                raise ValueError("Invalid parameters for wait. Need timeout_seconds OR (selector and state) OR url.")
+ 
+            # Optional small delay after successful condition wait
+            if selector or url:
+                self._human_like_delay(0.1, 0.3)
+ 
+            return {"success": True, "message": "Wait condition met successfully."}
+ 
+        except PlaywrightTimeoutError as e:
+            error_msg = f"Timeout waiting for condition: {e}"
+            logger.error(error_msg)
+            # Don't save screenshot for wait timeouts usually, unless specifically needed
+            return {"success": False, "message": error_msg}
+        except (PlaywrightError, ValueError) as e:
+            error_msg = f"Error during wait: {type(e).__name__}: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+        except Exception as e:
+            error_msg = f"Unexpected error during wait: {e}"
+            logger.error(error_msg, exc_info=True)
+            return {"success": False, "message": error_msg}
+            
 
 
     def start(self):
@@ -996,13 +1104,39 @@ class BrowserController:
             self.browser = self.playwright.chromium.launch(headless=self.headless, args=browser_args)
             # self.browser = self.playwright.chromium.launch(headless=self.headless)
 
-            self.context = self.browser.new_context(
+            context_options = self.browser.new_context(
                  user_agent=self._get_random_user_agent(),
                  viewport=self._get_random_viewport(),
                  ignore_https_errors=True,
                  java_script_enabled=True,
                  extra_http_headers=COMMON_HEADERS,
             )
+            context_options = {
+                 "user_agent": self._get_random_user_agent(),
+                 "viewport": self._get_random_viewport(),
+                 "ignore_https_errors": True,
+                 "java_script_enabled": True,
+                 "extra_http_headers": COMMON_HEADERS,
+            }
+
+            loaded_state = False
+            if self.auth_state_path and os.path.exists(self.auth_state_path):
+                try:
+                    logger.info(f"Attempting to load authentication state from: {self.auth_state_path}")
+                    context_options["storage_state"] = self.auth_state_path
+                    loaded_state = True
+                except Exception as e:
+                     logger.error(f"Failed to load storage state from '{self.auth_state_path}': {e}. Proceeding without saved state.", exc_info=True)
+                     # Remove the invalid option if loading failed
+                     if "storage_state" in context_options:
+                         del context_options["storage_state"]
+            elif self.auth_state_path:
+                logger.warning(f"Authentication state file not found at '{self.auth_state_path}'. Proceeding without saved state. Run generation script if needed.")
+            else:
+                logger.info("No authentication state path provided. Proceeding without saved state.")
+                
+            self.context = self.browser.new_context(**context_options)
+            
             self.context.set_default_navigation_timeout(self.default_navigation_timeout)
             self.context.set_default_timeout(self.default_action_timeout)
             self.context.add_init_script(HIDE_WEBDRIVER_SCRIPT)
