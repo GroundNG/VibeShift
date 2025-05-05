@@ -1,4 +1,4 @@
-# VibeCheck Web tester
+# VibeShift Web tester
 
 This project provides an AI-powered agent designed to streamline web testing workflows, particularly for developers using AI coding assistants like GitHub Copilot, Cursor, Roo Code, etc. It integrates directly into these assistants via the **MCP (Machine Command Protocol)**, allowing you to automate test recording, execution, and discovery using natural language prompts.
 
