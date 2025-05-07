@@ -1070,7 +1070,9 @@ class BrowserController:
                 logger.info(f"Wait finished: URL now matches '{url}'.")
  
             else:
-                raise ValueError("Invalid parameters for wait. Need timeout_seconds OR (selector and state) OR url.")
+                logger.info(f"Waiting for 5 seconds...")
+                self.page.wait_for_timeout(5 * 1000)
+                logger.info(f"Wait finished after {5:.2f} seconds.")
  
             # Optional small delay after successful condition wait
             if selector or url:

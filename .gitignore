@@ -9,3 +9,4 @@ ignore-*
 doc
 stitched.png
 visual_baselines/
+/results/

@@ -571,6 +571,8 @@ class TestExecutor:
                             if not current_selector: raise ValueError("Missing 'current_selector' for assert_enabled.")
                             locator = self._get_locator(current_selector)
                             expect(locator).to_be_enabled(timeout=self.default_timeout)
+                        elif action == "task_replanned":
+                            pass
                         elif action == "assert_visual_match":
                             baseline_id = params.get("baseline_id")
                             element_selector = step.get("selector") # Use step's selector if available
@@ -985,18 +987,20 @@ class TestExecutor:
         except (FileNotFoundError, ValueError, json.JSONDecodeError) as e:
             logger.error(f"Error loading or parsing test file '{json_file_path}': {e}")
             run_status["message"] = f"Failed to load/parse test file: {e}"
-            run_status["error_details"] = str(e)
-        except PlaywrightError as e: # Catch setup errors before loop
-             logger.critical(f"Playwright setup error during execution: {e}", exc_info=True)
-             run_status["message"] = f"Playwright setup failed: {e}"
-             run_status["error_details"] = str(e)
+            run_status["error_details"] = f"{type(e).__name__}: {str(e)}"
+            # status is already FAIL by default
+        except PlaywrightError as e: 
+             logger.critical(f"A Playwright error occurred during execution: {e}", exc_info=True)
+             if run_status["error_details"] is None: # If this is the first detailed error
+                run_status["message"] = f"Playwright error: {str(e)}"
+             run_status["error_details"] = f"{type(e).__name__}: {str(e)}"
+             run_status["status"] = "FAIL" # Ensure status is Fail
         except Exception as e:
-            # Catch errors from the execution loop if not already handled
-            if run_status["status"] != "FAIL" and run_status["status"] != "HEALING_TRIGGERED":
-                 logger.critical(f"An unexpected error occurred during execution: {e}", exc_info=True)
-                 run_status["message"] = f"Unexpected execution error: {e}"
-                 run_status["error_details"] = f"{type(e).__name__}: {e}"
-                 run_status["status"] = "FAIL" # Ensure status is Fail
+            logger.critical(f"An unexpected error occurred during execution: {e}", exc_info=True)
+            if run_status["error_details"] is None: # If this is the first detailed error
+                 run_status["message"] = f"Unexpected execution error: {str(e)}"
+            run_status["error_details"] = f"{type(e).__name__}: {str(e)}" # Ensure error_details is set
+            run_status["status"] = "FAIL" # Ensure status is Fail
         finally:
             logger.info("--- Ending Test Execution ---")
             if self.browser_controller:

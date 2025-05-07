@@ -12,6 +12,9 @@ from src.llm.llm_client import LLMClient
 from src.execution.executor import TestExecutor
 from src.utils.utils import load_api_key, load_api_version, load_api_base_url, load_llm_model
 from src.agents.auth_agent import record_selectors_and_save_auth_state
+from src.security.utils import save_report
+from src.security.semgrep_scanner import run_semgrep
+
 import logging
 import warnings
 
@@ -29,7 +32,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="AI Web Testing Agent - Recorder & Executor")
     parser.add_argument(
         '--mode',
-        choices=['record', 'execute','auth' ,'discover'],
+        choices=['record', 'execute','auth' ,'discover', 'security'],
         required=True,
         help="Mode to run the agent in: 'record' (interactive AI-assisted recording) or 'execute' (deterministic playback)."
     )
@@ -46,7 +49,7 @@ if __name__ == "__main__":
     parser.add_argument(
         '--url', # <<< Added URL argument for discover mode
         type=str,
-        help="Starting URL for website crawling (required for 'discover' mode)."
+        help="Starting URL for website crawling/security (required for 'discover' and 'security' mode)."
     )
     parser.add_argument(
         '--max-pages', # <<< Added max pages argument for discover mode
@@ -70,7 +73,12 @@ if __name__ == "__main__":
         default='soft',
         help="Self-healing mode: 'soft' (fix selector) or 'hard' (re-record) ('execute' mode only)."
     )
+    parser.add_argument("--code-path", help="Path to the codebase directory for Semgrep scan (optional).")
+    parser.add_argument("--output-dir", default="results", help="Directory to save scan reports.")
     parser.add_argument('--provider', choices=['gemini', 'openai', 'azure'], default='gemini', help="LLM provider (default: gemini). Choose openai for any OpenAI compatible LLMs.")
+    parser.add_argument("--semgrep-config", default="auto", help="Semgrep config/ruleset (e.g., 'p/ci', 'r/python'). Default is 'auto'.")
+    parser.add_argument("--semgrep-timeout", type=int, default=600, help="Semgrep scan timeout in seconds.")
+    
     args = parser.parse_args()
 
     # Validate arguments based on mode
@@ -430,8 +438,80 @@ if __name__ == "__main__":
             else:
                 print("\n--- Could not initialize LLM Client. Aborting authentication state generation. ---")
 
+        elif args.mode == 'security':
+            logging.info("--- Starting Phase 1: Security Scanning ---")
+            all_findings = []
+            # 1. Run ZAP Scan
+            # logging.info("--- Running ZAP Scan ---")
+            # if not args.zap_api_key:
+            #     logging.warning("ZAP API key not provided. ZAP scan might fail if API key is required.")
+            # zap_findings = run_zap_scan(
+            #     target_url=args.url,
+            #     zap_address=args.zap_address,
+            #     zap_api_key=args.zap_api_key,
+            #     spider_timeout=args.zap_spider_timeout,
+            #     scan_timeout=args.zap_scan_timeout
+            # )
+            # if zap_findings:
+            #     logging.info(f"Completed ZAP Scan. Found {len(zap_findings)} alerts.")
+            #     all_findings.extend(zap_findings)
+            #     save_report(zap_findings, "zap", args.output_dir, "scan_results")
+            # else:
+            #     logging.warning("ZAP scan completed with no findings or failed.")
 
+            # 2. Run Nuclei Scan
+            # logging.info("--- Running Nuclei Scan ---")
+            # nuclei_findings = run_nuclei(
+            #     target_url=args.url,
+            #     templates=args.nuclei_templates,
+            #     output_dir=args.output_dir,
+            #     timeout=args.nuclei_timeout
+            # )
+            # if nuclei_findings:
+            #     logging.info(f"Completed Nuclei Scan. Found {len(nuclei_findings)} potential issues.")
+            #     all_findings.extend(nuclei_findings)
+            #     # Nuclei output was already saved by the function, but we can save the parsed list again if needed
+            #     # save_report(nuclei_findings, "nuclei", args.output_dir, "scan_results_parsed")
+            # else:
+            #     logging.warning("Nuclei scan completed with no findings or failed.")
 
+            # 3. Run Semgrep Scan (if code path provided)
+            # 3. Run Semgrep Scan (if code path provided)
+            if args.code_path:
+                logging.info("--- Running Semgrep Scan ---")
+                semgrep_findings = run_semgrep(
+                    code_path=args.code_path,
+                    config=args.semgrep_config,
+                    output_dir=args.output_dir,
+                    timeout=args.semgrep_timeout
+                )
+                if semgrep_findings:
+                    logging.info(f"Completed Semgrep Scan. Found {len(semgrep_findings)} potential issues.")
+                    all_findings.extend(semgrep_findings)
+                    # Semgrep output was already saved, save parsed list if desired
+                    # save_report(semgrep_findings, "semgrep", args.output_dir, "scan_results_parsed")
+                else:
+                    logging.warning("Semgrep scan completed with no findings or failed.")
+            else:
+                logging.info("Skipping Semgrep scan as --code-path was not provided.")
+
+            logging.info("--- Phase 1: Security Scanning Complete ---")
+            
+            logging.info("--- Starting Phase 2: Consolidating Results ---")
+
+            logging.info(f"Total findings aggregated from all tools (future): {len(all_findings)}")
+
+            # Save the consolidated report
+            consolidated_report_path = save_report(all_findings, "consolidated", args.output_dir, "consolidated_scan_results")
+
+            if consolidated_report_path:
+                logging.info(f"Consolidated report saved to: {consolidated_report_path}")
+                print(f"\nConsolidated report saved to: {consolidated_report_path}") # Also print to stdout
+            else:
+                logging.error("Failed to save the consolidated report.")
+
+            logging.info("--- Phase 2: Consolidation Complete ---")
+            logging.info("--- Security Automation Script Finished ---")
 
 
 

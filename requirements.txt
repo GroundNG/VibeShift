@@ -10,3 +10,5 @@ mcp[cli]
 pixelmatch>=0.3.0
 openai
 patchright
+requests
+semgrep

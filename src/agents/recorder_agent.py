@@ -264,8 +264,8 @@ class WebAgent:
         1.  **Navigation:** `Navigate to https://example.com/login`
         2.  **Action:** `Click element 'Submit Button'` or `Type 'testuser' into element 'Username Input'` or `Check 'male' radio button or Check 'Agree to terms & conditions'` or `Uncheck the 'subscribe to newsletter' checkbox` (Describe the element clearly). **IMPORTANT for Dropdowns (<select>):** If the task involves selecting an option (e.g., "Select 'Canada' from the 'Country' dropdown"), generate a **SINGLE step** like: `Select option 'Canada' in element 'Country Dropdown'` (Describe the main `<select>` element and the option's visible text/label).
         3.  **Key Press:** `Press 'Enter' key on element 'Search Input'`, `Press 'Tab' key`. (Specify the element if the press is targeted, otherwise it might be global).
-+       4.  **Drag and Drop:** `Drag element 'Item A' onto element 'Cart Area'`. (Clearly describe source and target).
-+       5.  **Wait:** `Wait for 5 seconds`, `Wait for element 'Loading Spinner' to be hidden`, `Wait for element 'Success Message' to be visible`. (Specify time OR element condition).
+        4.  **Drag and Drop:** `Drag element 'Item A' onto element 'Cart Area'`. (Clearly describe source and target).
+        5.  **Wait:** `Wait for 5 seconds`
         6.  **Verification:** Phrase as a check. The recorder will prompt for specifics.
             - `Verify 'Login Successful' message is present`
             - `Verify 'Cart Count' shows 1`
@@ -913,7 +913,7 @@ Now, generate the verification JSON for: "{verification_description}"
                 user_choice = self.panel.wait_for_panel_interaction(30.0) # Give more time for review
                 if not user_choice: user_choice = 'skip' # Default to skip on timeout
 
-                # --- Process User Choice (Interactive) ---
+                # --- Process User Choice ---
                 if user_choice == 'record_ai':
                     # Record validated assertion
                     final_selector = verification_result.get("verification_selector")
@@ -1166,7 +1166,30 @@ Respond ONLY with the JSON object matching the schema.
 
             if confirm_recovery == 'y':
                  logger.info(f"Attempting AI recovery steps: {recovery_steps}")
-                 if self._insert_recovery_steps(current_planned_task['index'], recovery_steps):
+                 if self._insert_recovery_steps(current_planned_task['index'] + 1, recovery_steps):
+                      # Record that the original step's intent is being handled by a re-plan
+                      self.recorded_steps.append({
+                          "step_id": self._current_step_id,
+                          "action": "task_replanned", # Changed action name
+                          "description": current_planned_task['description'], # Use original task description
+                          "parameters": {
+                              "reason_for_replan": reason, 
+                              "recovery_steps_planned": recovery_steps,
+                              "original_task_index_in_plan": current_planned_task['index'] # For traceability
+                          },
+                          "selector": None, 
+                          "wait_after_secs": 0
+                      })
+                      self._current_step_id += 1
+
+                      # Mark the original task as 'done' in TaskManager as its outcome is now via these recovery steps
+                      self.task_manager.update_subtask_status(
+                          current_planned_task['index'], 
+                          "done", 
+                          result=f"Step handled by re-planning. Details recorded as 'task_replanned'. Recovery steps: {recovery_steps}",
+                          force_update=True # Ensure status is updated
+                      )
+                      
                       self._consecutive_suggestion_failures = 0
                       return True # Indicate recovery steps were inserted
                  else: # Insertion failed (should be rare)
@@ -2351,7 +2374,7 @@ Respond ONLY with the JSON object matching the schema.
                          if perm_failed_tasks:
                               first_failed_idx = self.task_manager.subtasks.index(perm_failed_tasks[0])
                               failed_task = perm_failed_tasks[0]
-                              recording_status["message"] = f"Recording process completed with failures. First failed step #{first_failed_idx+1}: {failed_task['description']} (Error: {failed_task['error']})"
+                              recording_status["message"] = f"Recording process completed with failures. First failed step #{first_failed_idx+1}: {failed_task['description']} (Error: {failed_task['result']})"
                               recording_status["success"] = False # Mark as failed overall
                               logger.error(recording_status["message"])
                          elif all(t['status'] in ['done', 'skipped'] for t in self.task_manager.subtasks):
@@ -2688,7 +2711,6 @@ Respond ONLY with the JSON object matching the schema.
                                 # Wait failed during recording
                                 logger.error(f"Wait execution FAILED during recording: {wait_exec_result['message']}")
                                 # Decide how to handle: Skip? Fail? Abort? Let's skip for now.
-                                print(f"❌ Wait condition not met during recording: {wait_exec_result['message']}")
                                 if not self.automated_mode:
                                     cont = input("Wait failed. Skip this step (S) or Abort recording (A)? [S]: ").strip().lower()
                                     if cont == 'a':
@@ -2811,8 +2833,10 @@ Respond ONLY with the JSON object matching the schema.
                         "test_name": f"{feature_description[:50]}_Test",
                         "feature_description": feature_description,
                         "recorded_at": datetime.utcnow().isoformat() + "Z",
+                        "console_logs": self.browser_controller.console_messages,
                         "steps": self.recorded_steps
                     }
+                    recording_status["console_messages"] = self.browser_controller.console_messages
                     ts = time.strftime("%Y%m%d_%H%M%S")
                     safe_feature_name = re.sub(r'[^\w\-]+', '_', feature_description)[:50]
                     if self.file_name is None:

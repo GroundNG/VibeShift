@@ -21,6 +21,8 @@ from src.agents.crawler_agent import CrawlerAgent
 from src.llm.llm_client import LLMClient
 from src.execution.executor import TestExecutor
 from src.utils.utils import load_api_key, load_api_base_url, load_api_version, load_llm_model
+from src.security.semgrep_scanner import run_semgrep
+from src.security.utils import save_report
 
 # Configure logging for the MCP server
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - [MCP Server] %(message)s')
@@ -38,7 +40,7 @@ llm_client = LLMClient(provider='azure')
 @mcp.tool()
 async def record_test_flow(feature_description: str, project_directory: str, headless: bool = True) -> Dict[str, Any]:
     """
-    Attempts to automatically record a web test flow based on a natural language description. If a case fails, there might be a possibility that you missed/told wrong step in feature description. 
+    Attempts to automatically record a web test flow based on a natural language description. If a case fails, there might be a possibility that you missed/told wrong step in feature description. Don't give vague actions like select anything. Give exact actions like select so and so element
     Uses the WebAgent in automated mode (bypasses interactive prompts). Do not skip telling any step. Give complete end to end steps what to do and what to verify
 
     Args:
@@ -228,23 +230,58 @@ def list_recorded_tests(project_directory: str) -> List[str]:
         return []
 
 
-# --- MCP Prompt: Guide for Requesting a Test Recording ---
-@mcp.prompt()
-def explain_test_request(feature_description: str) -> list[mcp_prompts.Message]:
+@mcp.tool()
+def get_security_scan(project_directory: str, semgrep_config: str = 'auto') -> List[str]:
     """
-    Generates a prompt to guide the calling LLM (e.g., coding assistant)
-    on how to use the 'record_test_flow' tool.
+    Provides a list of vulnarabilities in the code through static code scanning using semgrep. Try to fix them automatically if you think it is a true positive
+
+    Args:
+    project_directory: The project directory which you want to scan for security issues
+    semgrep_config: The config for semgrep scans. Default: 'auto'
+    
+    Returns:
+        vulnerabilities: A list of vulnerabilities for the repository
     """
-    return [
-        mcp_prompts.UserMessage(
-            "You can ask me to record a web test flow based on a description. "
-            "Please provide a clear, step-by-step description of the user journey you want to test. If a case fails, it could be either because your code has a problem, or could be you missed/wrong step in feature description "
-            "For example: 'Navigate to https://example.com/login, enter 'user' in the username field (selector: #user), 'pass' in the password field (selector: #pass), click the login button (selector: button.login), and verify the text 'Welcome!' appears (selector: h1.welcome)'."
-        ),
-        mcp_prompts.UserMessage(
-            f"Based on your request: '{feature_description}', I will attempt to use the 'record_test_flow' tool. "
-        ),
-    ]
+    logging.info("--- Starting Phase 1: Security Scanning ---")
+    all_findings = []
+    if project_directory:
+        logging.info("--- Running Semgrep Scan ---")
+        semgrep_findings = run_semgrep(
+            code_path=project_directory,
+            config=semgrep_config,
+            output_dir='./results',
+            timeout=600
+        )
+        if semgrep_findings:
+            logging.info(f"Completed Semgrep Scan. Found {len(semgrep_findings)} potential issues.")
+            all_findings.extend(semgrep_findings)
+            # Semgrep output was already saved, save parsed list if desired
+            # save_report(semgrep_findings, "semgrep", args.output_dir, "scan_results_parsed")
+        else:
+            logging.warning("Semgrep scan completed with no findings or failed.")
+            all_findings.append({"Warning": "Semgrep scan completed with no findings or failed."})
+    else:
+        logging.info("Skipping Semgrep scan as project_directory was not provided.")
+        all_findings.append({"Warning": "SemgSkipping Semgrep scan as project_directory was not provided"})
+
+    logging.info("--- Phase 1: Security Scanning Complete ---")
+    
+    logging.info("--- Starting Phase 2: Consolidating Results ---")
+
+    logging.info(f"Total findings aggregated from all tools (future): {len(all_findings)}")
+
+    # # Save the consolidated report
+    consolidated_report_path = save_report(all_findings, "consolidated", './results/', "consolidated_scan_results")
+
+    if consolidated_report_path:
+        logging.info(f"Consolidated report saved to: {consolidated_report_path}")
+        print(f"\nConsolidated report saved to: {consolidated_report_path}") # Also print to stdout
+    else:
+        logging.error("Failed to save the consolidated report.")
+
+    logging.info("--- Phase 2: Consolidation Complete ---")
+    logging.info("--- Security Automation Script Finished ---")
+    return all_findings
 
 
 # --- Running the Server ---
