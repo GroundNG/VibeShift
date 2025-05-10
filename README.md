@@ -13,8 +13,9 @@ This project provides an AI-powered agent designed to streamline web testing wor
 This creates a tighter feedback loop, automating the testing process and allowing the AI assistant (and the developer) to quickly identify and fix issues or regressions.
 
 # Demo (Click to play these videos)
+[![Demo](https://img.youtube.com/vi/bN_RgQGa8B0/maxresdefault.jpg)](https://www.youtube.com/watch?v=bN_RgQGa8B0)
 [![Click to play](https://img.youtube.com/vi/wCbCUCqjnXQ/maxresdefault.jpg)](https://youtu.be/wCbCUCqjnXQ)
-[![Full length development](https://img.youtube.com/vi/D5yeIS-0Ui4/maxresdefault.jpg)](https://youtu.be/D5yeIS-0Ui4)
+
 
 ## Features
 
