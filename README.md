@@ -49,7 +49,7 @@ This creates a "shift-left" security paradigm for AI-assisted coding, embedding 
 2.  **AI Coding Agent:** Recognizes the intent and uses MCP to call the appropriate tool provided by the `MCP Server`.
 3.  **MCP Server:** Routes the request to the corresponding function (`get_security_scan`, `record_test_flow`, `run_regression_test`, `discover_test_flows`, `list_recorded_tests`).
 4.  **VibeShift Agent:**
-    *   **Traditional Security Scan: **  Invokes **Static Analysis Tools** (e.g., Semgrep) on the code.
+    *   **Traditional Security Scan:**  Invokes **Static Analysis Tools** (e.g., Semgrep) on the code.
     *   **Recording:** The `WebAgent` (in automated mode) interacts with the LLM to plan steps, controls the browser via `BrowserController` (Playwright), processes HTML/Vision, and saves the resulting test steps to a JSON file in the `output/` directory.
     *   **Execution:** The `TestExecutor` loads the specified JSON test file, uses `BrowserController` to interact with the browser according to the recorded steps, and captures results, screenshots, and console logs.
     *   **Discovery:** The `CrawlerAgent` uses `BrowserController` and `LLMClient` to crawl pages and suggest test steps.
