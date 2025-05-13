@@ -1,6 +1,6 @@
 # VibeShift Web tester
 
-This project provides an AI-powered agent designed to streamline web testing workflows, particularly for developers using AI coding assistants like GitHub Copilot, Cursor, Roo Code, etc. It integrates directly into these assistants via the **MCP (Machine Command Protocol)**, allowing you to automate test recording, execution, and discovery using natural language prompts.
+This project provides an AI-powered agent designed to streamline web testing workflows, particularly for developers using AI coding assistants like GitHub Copilot, Cursor, Roo Code, etc. It integrates directly into these assistants via the **MCP (Model Context Protocol)**, allowing you to automate test recording, execution, and discovery using natural language prompts.
 
 **The Problem:** Manually testing web applications after generating code with AI assistants is time-consuming and error-prone. Furthermore, AI-driven code changes can inadvertently introduce regressions in previously working features.
 
