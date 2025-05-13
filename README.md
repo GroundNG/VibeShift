@@ -164,7 +164,8 @@ Interact with the agent through your MCP-enabled AI coding assistant using natur
   
 ## Contributing
 
-We welcome contributions! Please see `CONTRIBUTING.md` (once created) for details on how to get started, report issues, and submit pull requests. We're particularly interested in:
+We welcome contributions! Please see `CONTRIBUTING.md` for details on how to get started, report issues, and submit pull requests. We're particularly interested in:
+
 *   New security analyzer integrations.
 
 ## License
