@@ -4,6 +4,7 @@
 
 [![Twitter Follow](https://img.shields.io/twitter/follow/Omiiee_Chan?style=social)](https://x.com/Omiiee_Chan)
 [![Twitter Follow](https://img.shields.io/twitter/follow/_gauravkabra_?style=social)](https://x.com/_gauravkabra_)
+![](https://img.shields.io/github/stars/groundng/vibeshift)
 
 **The Problem:** AI coding assistants accelerate development dramatically, but they can also generate code with subtle or overt security vulnerabilities. Manually reviewing all AI-generated code for security flaws is slow, error-prone, and doesn't scale with the speed of AI development. This "vibe-driven development" can leave applications exposed.
 
