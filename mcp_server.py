@@ -7,6 +7,7 @@ from typing import List, Dict, Any, Optional
 import asyncio
 import re
 import time
+from datetime import datetime
 
 # Ensure agent modules are importable (adjust path if necessary)
 # Assuming mcp_server.py is at the root level alongside agent.py etc.
@@ -22,6 +23,8 @@ from src.llm.llm_client import LLMClient
 from src.execution.executor import TestExecutor
 from src.utils.utils import load_api_key, load_api_base_url, load_api_version, load_llm_model
 from src.security.semgrep_scanner import run_semgrep
+from src.security.zap_scanner import run_zap_scan, discover_endpoints
+from src.security.nuclei_scanner import run_nuclei
 from src.security.utils import save_report
 
 # Configure logging for the MCP server
@@ -44,7 +47,7 @@ async def record_test_flow(feature_description: str, project_directory: str, hea
     Uses the WebAgent in automated mode (bypasses interactive prompts). Do not skip telling any step. Give complete end to end steps what to do and what to verify
 
     Args:
-        feature_description: A natural language description of the test case or user flow. Crucially, this description MUST explicitly include the starting URL of the website to be tested (e.g., 'Go to https://example.com, then click...').
+        feature_description: A natural language description of the test case or user flow. Crucially, this description MUST explicitly include the starting URL of the website to be tested (e.g., 'Go to https://example.com, then click...'). Do not give blanket things for input. Say exact things like enter invalid-email into email box or enter validemail@gmail.com into mailbox
         project_directory: The project directory you are currently working in. This is used to identify the test flows of a project
         headless: Run the underlying browser in headless mode. Defaults to True.
 
@@ -231,20 +234,27 @@ def list_recorded_tests(project_directory: str) -> List[str]:
 
 
 @mcp.tool()
-def get_security_scan(project_directory: str, semgrep_config: str = 'auto') -> List[str]:
+def get_security_scan(project_directory: str, target_url: str = None, semgrep_config: str = 'auto') -> Dict[str, Any]:
     """
-    Provides a list of vulnarabilities in the code through static code scanning using semgrep. Try to fix them automatically if you think it is a true positive
+    Provides a list of vulnerabilities in the code through static code scanning using semgrep, nuclei and zap.
+    Also discovers endpoints using ZAP's spider functionality. Try to fix them automatically if you think it is a true positive.
 
     Args:
-    project_directory: The project directory which you want to scan for security issues
+    project_directory: The project directory which you want to scan for security issues. Give absolute path only.
+    target_url: The target URL for dynamic scanning (ZAP and Nuclei). Required for endpoint discovery.
     semgrep_config: The config for semgrep scans. Default: 'auto'
     
     Returns:
-        vulnerabilities: A list of vulnerabilities for the repository
+        Dict containing:
+        - vulnerabilities: List of vulnerabilities found
+        - endpoints: List of discovered endpoints (if target_url provided)
     """
     logging.info("--- Starting Phase 1: Security Scanning ---")
     all_findings = []
+    discovered_endpoints = []
+
     if project_directory:
+        # Run Semgrep scan
         logging.info("--- Running Semgrep Scan ---")
         semgrep_findings = run_semgrep(
             code_path=project_directory,
@@ -255,33 +265,97 @@ def get_security_scan(project_directory: str, semgrep_config: str = 'auto') -> L
         if semgrep_findings:
             logging.info(f"Completed Semgrep Scan. Found {len(semgrep_findings)} potential issues.")
             all_findings.extend(semgrep_findings)
-            # Semgrep output was already saved, save parsed list if desired
-            # save_report(semgrep_findings, "semgrep", args.output_dir, "scan_results_parsed")
         else:
             logging.warning("Semgrep scan completed with no findings or failed.")
             all_findings.append({"Warning": "Semgrep scan completed with no findings or failed."})
+
+        if target_url:
+            # First, discover endpoints using ZAP spider
+            logging.info("--- Running Endpoint Discovery ---")
+            try:
+                discovered_endpoints = discover_endpoints(
+                    target_url=target_url,
+                    output_dir='./results',
+                    timeout=600  # 10 minutes for discovery
+                )
+                logging.info(f"Discovered {len(discovered_endpoints)} endpoints")
+            except Exception as e:
+                logging.error(f"Error during endpoint discovery: {e}")
+                discovered_endpoints = []
+
+            # Run ZAP scan
+            logging.info("--- Running ZAP Scan ---")
+            try:
+                zap_findings = run_zap_scan(
+                    target_url=target_url,
+                    output_dir='./results',
+                    scan_mode="baseline"  # Using baseline scan for quicker results
+                )
+                if zap_findings and not isinstance(zap_findings[0], str):
+                    logging.info(f"Completed ZAP Scan. Found {len(zap_findings)} potential issues.")
+                    all_findings.extend(zap_findings)
+                else:
+                    logging.warning("ZAP scan completed with no findings or failed.")
+                    all_findings.append({"Warning": "ZAP scan completed with no findings or failed."})
+            except Exception as e:
+                logging.error(f"Error during ZAP scan: {e}")
+                all_findings.append({"Error": f"ZAP scan failed: {str(e)}"})
+
+            # Run Nuclei scan
+            logging.info("--- Running Nuclei Scan ---")
+            try:
+                nuclei_findings = run_nuclei(
+                    target_url=target_url,
+                    output_dir='./results'
+                )
+                if nuclei_findings and not isinstance(nuclei_findings[0], str):
+                    logging.info(f"Completed Nuclei Scan. Found {len(nuclei_findings)} potential issues.")
+                    all_findings.extend(nuclei_findings)
+                else:
+                    logging.warning("Nuclei scan completed with no findings or failed.")
+                    all_findings.append({"Warning": "Nuclei scan completed with no findings or failed."})
+            except Exception as e:
+                logging.error(f"Error during Nuclei scan: {e}")
+                all_findings.append({"Error": f"Nuclei scan failed: {str(e)}"})
+        else:
+            logging.info("Skipping dynamic scans and endpoint discovery as target_url was not provided.")
+
     else:
-        logging.info("Skipping Semgrep scan as project_directory was not provided.")
-        all_findings.append({"Warning": "SemgSkipping Semgrep scan as project_directory was not provided"})
+        logging.info("Skipping scans as project_directory was not provided.")
+        all_findings.append({"Warning": "Skipping scans as project_directory was not provided"})
 
     logging.info("--- Phase 1: Security Scanning Complete ---")
     
     logging.info("--- Starting Phase 2: Consolidating Results ---")
+    logging.info(f"Total findings aggregated from all tools: {len(all_findings)}")
 
-    logging.info(f"Total findings aggregated from all tools (future): {len(all_findings)}")
-
-    # # Save the consolidated report
+    # Save the consolidated report
     consolidated_report_path = save_report(all_findings, "consolidated", './results/', "consolidated_scan_results")
 
     if consolidated_report_path:
         logging.info(f"Consolidated report saved to: {consolidated_report_path}")
-        print(f"\nConsolidated report saved to: {consolidated_report_path}") # Also print to stdout
+        print(f"\nConsolidated report saved to: {consolidated_report_path}")
     else:
         logging.error("Failed to save the consolidated report.")
 
+    # Save discovered endpoints if any
+    if discovered_endpoints:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        endpoints_file = os.path.join('./results', f"discovered_endpoints_{timestamp}.json")
+        try:
+            with open(endpoints_file, 'w') as f:
+                json.dump(discovered_endpoints, f, indent=2)
+            logging.info(f"Saved discovered endpoints to: {endpoints_file}")
+        except Exception as e:
+            logging.error(f"Failed to save endpoints report: {e}")
+
     logging.info("--- Phase 2: Consolidation Complete ---")
     logging.info("--- Security Automation Script Finished ---")
-    return all_findings
+    
+    return {
+        "vulnerabilities": all_findings,
+        "endpoints": discovered_endpoints
+    }
 
 
 # --- Running the Server ---
