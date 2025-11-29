@@ -4,7 +4,6 @@
 
 <a href="https://www.producthunt.com/posts/vibeshift-mcp?embed=true&utm_source=badge-featured&utm_medium=badge&utm_source=badge-vibeshift&#0045;mcp" target="_blank"><img src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=966186&theme=light&t=1747654611925" alt="VibeShift&#0032;MCP - Get&#0032;secure&#0044;&#0032;working&#0032;code&#0032;in&#0032;1&#0032;shot | Product Hunt" style="width: 115px; height: 25px;" width="250" height="54" /></a>
 [![Twitter Follow](https://img.shields.io/twitter/follow/Omiiee_Chan?style=social)](https://x.com/Omiiee_Chan)
-[![Twitter Follow](https://img.shields.io/twitter/follow/_gauravkabra_?style=social)](https://x.com/_gauravkabra_)
 ![](https://img.shields.io/github/stars/groundng/vibeshift)
 
 
